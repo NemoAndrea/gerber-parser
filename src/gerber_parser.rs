@@ -1,7 +1,7 @@
-use std::{io::{Read, BufReader, BufRead}, convert::TryInto};
-use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat, ApertureDefinition, Aperture, Circle, Rectangular, Polygon};
+use std::{io::{Read, BufReader, BufRead}, convert::TryInto, os::raw, process::CommandArgs};
+use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat,
+     ApertureDefinition, Aperture, Circle, Rectangular, Polygon, MCode, DCode};
 use regex::Regex;
-
 
 fn parse_gerber<T: Read>(reader: BufReader<T>) -> Vec<Command> {
     let mut gerber_cmds:Vec<Command> = Vec::new();
@@ -13,107 +13,166 @@ fn parse_gerber<T: Read>(reader: BufReader<T>) -> Vec<Command> {
     let re_aperture = Regex::new(r"%ADD([0-9]+)([A-Z]),(.*)\*%").unwrap();
 
     for (index, line) in reader.lines().enumerate() {
-        let line = line.unwrap(); // Ignore errors.
-        // Show the line and its number.
+        let rawline = line.unwrap(); 
+        // TODO combine this with line above
+        let line = rawline.trim();
+
+        // Show the line 
         //println!("{}. {}", index + 1, &line);
         if !line.is_empty() {
-            // units
-            if let Some(regmatch) = re_units.captures(&line) {
-                let units_str = regmatch.get(1).unwrap().as_str();
-                if units_str == "MM" {
-                    gerber_cmds.push(ExtendedCode::Unit(Unit::Millimeters).into());
-                } else if units_str == "IN" {
-                    gerber_cmds.push(ExtendedCode::Unit(Unit::Inches).into())
-                } else { panic!("Incorrect gerber units format")}
-            } 
+            let mut linechars = line.chars();
 
-            // Gerber Format Specification
-            if let Some(regmatch) = re_formatspec.captures(&line) {
-                let mut fs_chars = regmatch.get(1).unwrap().as_str().chars();
-                let integer:u8 = fs_chars.next().unwrap().to_digit(10).unwrap() as u8;
-                let decimal:u8 = fs_chars.next().unwrap().to_digit(10).unwrap() as u8;
-
-                // the gerber spec states that the integer value can be at most 6
-                assert!(integer >= 1 && integer <= 6, "format spec integer value must be between 1 and 6");
-
-                let fs = CoordinateFormat::new(integer, decimal);                  
-                gerber_cmds.push(ExtendedCode::CoordinateFormat(fs).into());
-            } 
-
-            // comments
-            if let Some(regmatch) = re_comment.captures(&line) {
-                let comment = regmatch.get(1).unwrap().as_str();
-                gerber_cmds.push(FunctionCode::GCode(GCode::Comment(comment.to_string())).into());
-            } 
-
-            // aperture definitions
-            // TODO: prevent the same aperture code being used twice
-            if let Some(regmatch) = re_aperture.captures(&line) {
-                let code = regmatch.get(1).unwrap().as_str().parse::<i32>().expect("Failed to parse aperture code");
-                assert!(code > 9, "Aperture codes 0-9 cannot be used for custom apertures");
-
-                
-                let aperture_type = regmatch.get(2).unwrap().as_str();
-                let aperture_args:  Vec<&str> = regmatch.get(3).unwrap().as_str().split("X").collect();
-
-                println!("The code is {}, and the aperture type is {} with params {:?}", code, aperture_type, aperture_args);
-
-                match aperture_type {
-                    "C" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                        code: code,
-                        aperture: Aperture::Circle(Circle {
-                            diameter: aperture_args[0].trim().parse::<f64>().unwrap(),
-                            hole_diameter: if aperture_args.len() > 1 {
-                                Some(aperture_args[1].trim().parse::<f64>().unwrap())} else {None}
-                        }),
-                    }).into()),
-                    "R" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                        code: code,
-                        aperture: Aperture::Rectangle(Rectangular {
-                            x: aperture_args[0].trim().parse::<f64>().unwrap(),
-                            y: aperture_args[1].trim().parse::<f64>().unwrap(),
-                            hole_diameter: if aperture_args.len() > 2 {
-                                Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None}
-                        }),
-                    }).into()),
-                    "O" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                        code: code,
-                        aperture: Aperture::Obround(Rectangular {
-                            x: aperture_args[0].trim().parse::<f64>().unwrap(),
-                            y: aperture_args[1].trim().parse::<f64>().unwrap(),
-                            hole_diameter: if aperture_args.len() > 2 {
-                                Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None}
-                        }),
-                    }).into()),
-                    // note that for polygon we have to specify rotation if we want to add a hole
-                    "P" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                        code: code,
-                        aperture: Aperture::Polygon(Polygon {
-                            diameter: aperture_args[0].trim().parse::<f64>().unwrap(),
-                            vertices: aperture_args[1].trim().parse::<u8>().unwrap(),
-                            rotation: if aperture_args.len() > 2 {
-                                Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None},
-                            hole_diameter: if aperture_args.len() > 3 {
-                                Some(aperture_args[3].trim().parse::<f64>().unwrap())} else {None}
-                        }),
-                    }).into()),
-                    
-                    
-                    _ => println!("ignoring")
-                    
-                }
-                
-
-                
-
-
-            }
+            match linechars.next().unwrap() {
+                'G' => {
+                    match linechars.next().unwrap() {
+                        '0' =>  match linechars.next().unwrap() {
+                            '1' => {}, // G01
+                            '2' => {}, // G02
+                            '3' => {}, // G03
+                            '4' => {parse_comment(line, &re_comment, &mut gerber_cmds) }, // G04
+                            _ => panic!("Cannot parse line: {}", line),
+                        },
+                        '3'=> match linechars.next().unwrap() {
+                            '6' => {}, // G35
+                            '7' => {}, // G36
+                            _ => panic!("Cannot parse line: {}", line),
+                        },
+                        '7' => {}, // G75
+                        _ => panic!("Cannot parse line: {}", line),             }
+                },
+                '%' => {
+                    match linechars.next().unwrap() {
+                        'M' => { parse_units(line, &re_units, &mut gerber_cmds) },
+                        'F' => { parse_format_spec(line, &re_formatspec, &mut gerber_cmds) },
+                        'A' => match linechars.next().unwrap() {
+                            'D' => { parse_aperture_defs(line, &re_aperture, &mut gerber_cmds) }, // AD
+                            'M' => { }, // AM 
+                            _ => panic!("Cannot parse line: {}", line)
+                        }, 
+                        _ => panic!("Cannot parse line: {}", line)
+                    }
+                },
+                'X' => {linechars.next_back(); match linechars.next_back().unwrap() { 
+                    '1' => {}, // D01
+                    '2' => {}, // D02
+                    '3' => {}, // D03
+                    _ => panic!("Cannot parse line: {}", line)
+                }},
+                'D' => { // select aperture D<num>*                   
+                    linechars.next_back(); // remove the trailing '*'
+                    gerber_cmds.push(FunctionCode::DCode(DCode::SelectAperture(
+                    linechars.as_str().parse::<i32>().expect("Failed to parse aperture selection"))).into())}, 
+                'L' => match linechars.next().unwrap() {
+                    'P' => {}, // LP
+                    'M' => {}, // LM 
+                    'R' => {}, // LP
+                    'S' => {}, // LS
+                    _ => panic!("Cannot parse line: {}", line)
+                },
+                'M' => { gerber_cmds.push(FunctionCode::MCode(MCode::EndOfFile).into())}
+                // TODO: implement the TF/TA/TO/TD commands
+                _ => panic!("Cannot parse line: {}", line)
+            }           
         }
     }
 
+    // check that we ended with a gerber EOF command
+    assert_eq!(gerber_cmds.last().unwrap(), &Command::FunctionCode(FunctionCode::MCode(MCode::EndOfFile)),
+        "Missing M02 statement at end of file");
 
     return gerber_cmds
 }
+
+fn parse_comment(line: &str, re: &Regex, commands: &mut Vec<Command>) {
+    if let Some(regmatch) = re.captures(line) {
+        let comment = regmatch.get(1).unwrap().as_str();
+        commands.push(FunctionCode::GCode(GCode::Comment(comment.to_string())).into());
+    } 
+}
+
+fn parse_units(line: &str, re: &Regex, commands: &mut Vec<Command>) {
+    if let Some(regmatch) = re.captures(line) {
+        let units_str = regmatch.get(1).unwrap().as_str();
+        if units_str == "MM" {
+            commands.push(ExtendedCode::Unit(Unit::Millimeters).into());
+        } else if units_str == "IN" {
+            commands.push(ExtendedCode::Unit(Unit::Inches).into())
+        } else { panic!("Incorrect gerber units format")}
+    }
+}
+
+fn parse_format_spec(line: &str, re: &Regex, commands: &mut Vec<Command>) {
+    // Gerber Format Specification
+    if let Some(regmatch) = re.captures(line) {
+        let mut fs_chars = regmatch.get(1).unwrap().as_str().chars();
+        let integer:u8 = fs_chars.next().unwrap().to_digit(10).unwrap() as u8;
+        let decimal:u8 = fs_chars.next().unwrap().to_digit(10).unwrap() as u8;
+
+        // the gerber spec states that the integer value can be at most 6
+        assert!(integer >= 1 && integer <= 6, "format spec integer value must be between 1 and 6");
+
+        let fs = CoordinateFormat::new(integer, decimal);                  
+        commands.push(ExtendedCode::CoordinateFormat(fs).into());
+    } 
+}
+
+fn parse_aperture_defs(line: &str, re: &Regex, commands: &mut Vec<Command>) {
+    // aperture definitions
+    // TODO: prevent the same aperture code being used twice
+    if let Some(regmatch) = re.captures(line) {
+        let code = regmatch.get(1).unwrap().as_str().parse::<i32>().expect("Failed to parse aperture code");
+        assert!(code > 9, "Aperture codes 0-9 cannot be used for custom apertures");
+
+        
+        let aperture_type = regmatch.get(2).unwrap().as_str();
+        let aperture_args:  Vec<&str> = regmatch.get(3).unwrap().as_str().split("X").collect();
+
+        //println!("The code is {}, and the aperture type is {} with params {:?}", code, aperture_type, aperture_args);
+
+        match aperture_type {
+            "C" => commands.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: code,
+                aperture: Aperture::Circle(Circle {
+                    diameter: aperture_args[0].trim().parse::<f64>().unwrap(),
+                    hole_diameter: if aperture_args.len() > 1 {
+                        Some(aperture_args[1].trim().parse::<f64>().unwrap())} else {None}
+                }),
+            }).into()),
+            "R" => commands.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: code,
+                aperture: Aperture::Rectangle(Rectangular {
+                    x: aperture_args[0].trim().parse::<f64>().unwrap(),
+                    y: aperture_args[1].trim().parse::<f64>().unwrap(),
+                    hole_diameter: if aperture_args.len() > 2 {
+                        Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None}
+                }),
+            }).into()),
+            "O" => commands.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: code,
+                aperture: Aperture::Obround(Rectangular {
+                    x: aperture_args[0].trim().parse::<f64>().unwrap(),
+                    y: aperture_args[1].trim().parse::<f64>().unwrap(),
+                    hole_diameter: if aperture_args.len() > 2 {
+                        Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None}
+                }),
+            }).into()),
+            // note that for polygon we HAVE TO specify rotation if we want to add a hole
+            "P" => commands.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: code,
+                aperture: Aperture::Polygon(Polygon {
+                    diameter: aperture_args[0].trim().parse::<f64>().unwrap(),
+                    vertices: aperture_args[1].trim().parse::<u8>().unwrap(),
+                    rotation: if aperture_args.len() > 2 {
+                        Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None},
+                    hole_diameter: if aperture_args.len() > 3 {
+                        Some(aperture_args[3].trim().parse::<f64>().unwrap())} else {None}
+                }),
+            }).into()),                   
+            _ => panic!("Encountered unknown aperture definition statement")                    
+        }
+    }
+}
+
 
 
 
@@ -178,6 +237,13 @@ mod tests {
     X0Y720D03*
     M02*
     ";
+
+    #[test]
+    fn test_full_gerber() {
+        let gerber_reader = gerber_to_reader(&SAMPLE_GERBER_1);
+
+        assert_eq!(parse_gerber(gerber_reader), vec![]);
+    }
 
     #[test]
     fn format_specification() {
@@ -319,5 +385,17 @@ mod tests {
                 code: 126,
                 aperture: Aperture::Polygon(Polygon{diameter: 1.0,vertices: 7,rotation: Some(5.5),hole_diameter: Some(0.7)})})),
             ])
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_missing_EOF() {
+        let reader = gerber_to_reader("
+        %FSLAX23Y23*%
+        %MOMM*%-
+
+        G04 We should have a MO2 at the end, but what if we forget it?*      
+        ");
+        parse_gerber(reader);
     }
 }
