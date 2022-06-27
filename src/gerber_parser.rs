@@ -1,5 +1,5 @@
 use std::{io::{Read, BufReader, BufRead}, convert::TryInto};
-use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat, ApertureDefinition, Aperture, Circle};
+use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat, ApertureDefinition, Aperture, Circle, Rectangular, Polygon};
 use regex::Regex;
 
 
@@ -10,7 +10,7 @@ fn parse_gerber<T: Read>(reader: BufReader<T>) -> Vec<Command> {
     let re_units = Regex::new(r"%MO(.*)\*%").unwrap();
     let re_comment = Regex::new(r"G04 (.*)\*").unwrap();
     let re_formatspec = Regex::new(r"%FSLAX(.*)Y(.*)\*%").unwrap();
-    let re_aperture = Regex::new(r"%ADD([0-9]+)(.*)\*%").unwrap();
+    let re_aperture = Regex::new(r"%ADD([0-9]+)([A-Z]),(.*)\*%").unwrap();
 
     for (index, line) in reader.lines().enumerate() {
         let line = line.unwrap(); // Ignore errors.
@@ -52,16 +52,59 @@ fn parse_gerber<T: Read>(reader: BufReader<T>) -> Vec<Command> {
                 let code = regmatch.get(1).unwrap().as_str().parse::<i32>().expect("Failed to parse aperture code");
                 assert!(code > 9, "Aperture codes 0-9 cannot be used for custom apertures");
 
-                let aperture = regmatch.get(2).unwrap().as_str();
-                println!("The code is {}, and the aperture being defines is {}", code, aperture);
+                
+                let aperture_type = regmatch.get(2).unwrap().as_str();
+                let aperture_args:  Vec<&str> = regmatch.get(3).unwrap().as_str().split("X").collect();
 
-                gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                    code: code,
-                    aperture: Aperture::Circle(Circle {
-                        diameter: 0.01,
-                        hole_diameter: None,
-                    }),
-                }).into())
+                println!("The code is {}, and the aperture type is {} with params {:?}", code, aperture_type, aperture_args);
+
+                match aperture_type {
+                    "C" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                        code: code,
+                        aperture: Aperture::Circle(Circle {
+                            diameter: aperture_args[0].trim().parse::<f64>().unwrap(),
+                            hole_diameter: if aperture_args.len() > 1 {
+                                Some(aperture_args[1].trim().parse::<f64>().unwrap())} else {None}
+                        }),
+                    }).into()),
+                    "R" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                        code: code,
+                        aperture: Aperture::Rectangle(Rectangular {
+                            x: aperture_args[0].trim().parse::<f64>().unwrap(),
+                            y: aperture_args[1].trim().parse::<f64>().unwrap(),
+                            hole_diameter: if aperture_args.len() > 2 {
+                                Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None}
+                        }),
+                    }).into()),
+                    "O" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                        code: code,
+                        aperture: Aperture::Obround(Rectangular {
+                            x: aperture_args[0].trim().parse::<f64>().unwrap(),
+                            y: aperture_args[1].trim().parse::<f64>().unwrap(),
+                            hole_diameter: if aperture_args.len() > 2 {
+                                Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None}
+                        }),
+                    }).into()),
+                    // note that for polygon we have to specify rotation if we want to add a hole
+                    "P" => gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                        code: code,
+                        aperture: Aperture::Polygon(Polygon {
+                            diameter: aperture_args[0].trim().parse::<f64>().unwrap(),
+                            vertices: aperture_args[1].trim().parse::<u8>().unwrap(),
+                            rotation: if aperture_args.len() > 2 {
+                                Some(aperture_args[2].trim().parse::<f64>().unwrap())} else {None},
+                            hole_diameter: if aperture_args.len() > 3 {
+                                Some(aperture_args[3].trim().parse::<f64>().unwrap())} else {None}
+                        }),
+                    }).into()),
+                    
+                    
+                    _ => println!("ignoring")
+                    
+                }
+                
+
+                
 
 
             }
@@ -231,13 +274,13 @@ mod tests {
         %ADD22R, 0.01X0.15*%
         %ADD23O, 0.01X0.15*%
         %ADD21P, 0.7X10*%
-        %ADD24P, 0.7X10X5.5*%
+        %ADD24P, 0.7X10X16.5*%
 
         G04 Apertures with holes*
         %ADD123C, 0.01X0.003*%
-        %ADD124R, 0.01X0.15X0.00001*%
-        %ADD125O, 0.01X0.15X0.0.019*%
-        %ADD126P, 1X2.3X0.0X0.7*%
+        %ADD124R, 0.1X0.15X0.00001*%
+        %ADD125O, 0.1X0.15X0.019*%
+        %ADD126P, 1X7X5.5X0.7*%
 
         M02*        
         ");
@@ -249,40 +292,32 @@ mod tests {
         assert_eq!(filter_commands(parse_gerber(reader)), vec![
             Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code: 999,
-                aperture: Aperture::Circle(Circle {
-                    diameter: 0.01,
-                    hole_diameter: None,
-                })})),
+                aperture: Aperture::Circle(Circle {diameter: 0.01, hole_diameter: None})})),
             Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code: 22,
-                aperture: Aperture::Rectangle(Rectangular  {
-                    x: 0.01,
-                    y: 0.15,
-                    hole_diameter: None,
-                })})),
+                aperture: Aperture::Rectangle(Rectangular{x: 0.01,y: 0.15,hole_diameter: None})})),
             Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code: 23,
-                aperture: Aperture::Obround(Rectangular {
-                    x: 0.01,
-                    y: 0.15,
-                    hole_diameter: None,
-                })})),
+                aperture: Aperture::Obround(Rectangular{x: 0.01,y: 0.15,hole_diameter: None})})),
             Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code: 21,
-                aperture: Aperture::Polygon(Polygon {
-                    diameter: 0.7,
-                    vertices: 10,
-                    rotation: None,
-                    hole_diameter: None,
-                })})),
+                aperture: Aperture::Polygon(Polygon{diameter: 0.7,vertices: 10,rotation: None, hole_diameter: None})})),
             Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code: 24,
-                aperture: Aperture::Polygon(Polygon {
-                    diameter: 0.7,
-                    vertices: 10,
-                    rotation: Some(5.5),
-                    hole_diameter: None,
-                })})),
+                aperture: Aperture::Polygon(Polygon{diameter: 0.7,vertices: 10,rotation: Some(16.5),hole_diameter: None})})),
+
+            Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: 123,
+                aperture: Aperture::Circle(Circle {diameter: 0.01,hole_diameter: Some(0.003)})})),
+            Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: 124,
+                aperture: Aperture::Rectangle(Rectangular {x: 0.1,y: 0.15,hole_diameter: Some(0.00001)})})),
+            Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: 125,
+                aperture: Aperture::Obround(Rectangular {x: 0.1,y: 0.15,hole_diameter: Some(0.019)})})),
+            Command::ExtendedCode(ExtendedCode::ApertureDefinition(ApertureDefinition {
+                code: 126,
+                aperture: Aperture::Polygon(Polygon{diameter: 1.0,vertices: 7,rotation: Some(5.5),hole_diameter: Some(0.7)})})),
             ])
     }
 }
