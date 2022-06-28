@@ -1,8 +1,8 @@
-pub mod gerber_parser;
-pub mod gerber_document;
+pub mod parser;
+pub mod gerber_doc;
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use std::fs;
 
 pub fn test_func() {
