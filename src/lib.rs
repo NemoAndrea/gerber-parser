@@ -1,4 +1,5 @@
 pub mod gerber_parser;
+pub mod gerber_document;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
