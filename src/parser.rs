@@ -1,7 +1,8 @@
-use std::io::{Read, BufReader, BufRead};
+use std::{io::{Read, BufReader, BufRead}, fs::File};
 use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat,
      Aperture, Circle, Rectangular, Polygon, MCode, DCode, Polarity,
-      InterpolationMode, QuadrantMode, Operation, Coordinates, CoordinateNumber, CoordinateOffset};
+      InterpolationMode, QuadrantMode, Operation, Coordinates, CoordinateNumber, CoordinateOffset,
+       ApertureAttribute, ApertureFunction, FiducialScope, SmdPadType, FileAttribute, FilePolarity, Part, FileFunction};
 use regex::Regex;
 use std::str::Chars;
 use crate::gerber_doc::{ GerberDoc, empty_gerber};
@@ -23,6 +24,8 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     let re_aperture = Regex::new(r"%ADD([0-9]+)([A-Z]),(.*)\*%").unwrap();
     let re_interpolation = Regex::new(r"X(-?[0-9]+)Y(-?[0-9]+)I?(-?[0-9]+)?J?(-?[0-9]+)?D01\*").unwrap();
     let re_move_or_flash = Regex::new(r"X(-?[0-9]+)Y(-?[0-9]+)D0[2-3]*").unwrap();
+    // TODO: handle escaped characters for attributes
+    let re_attributes = Regex::new(r"%T[A-Z].([A-Z]+?),?").unwrap();  
 
     for (index, line) in reader.lines().enumerate() {
         let rawline = line.unwrap(); 
@@ -81,6 +84,13 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                             'S' => { panic!("Load Scaling (LS) command not supported yet.") }, // LS
                             _ => line_parse_failure(line, index)
                         },
+                        'T' => match linechars.next().unwrap() {
+                            'F' => { parse_file_attribute(linechars, &re_attributes,  &mut gerber_doc) },
+                            'A' => { parse_aperture_attribute(linechars, &re_attributes, &mut gerber_doc) },
+                            'O' => { parse_object_attribute(linechars, &re_attributes, &mut gerber_doc) },
+                            'D' => { parse_delete_attribute(linechars, &re_attributes, &mut gerber_doc) },
+                            _ => line_parse_failure(line, index)
+                        }
                         _ => line_parse_failure(line, index)
                     }
                 },
@@ -94,14 +104,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                     linechars.next_back(); // remove the trailing '*'
                     parse_aperture_selection(linechars, &mut gerber_doc)
                 },                
-                'M' => { gerber_doc.commands.push(FunctionCode::MCode(MCode::EndOfFile).into())}
-                'T' => match linechars.next().unwrap() {
-                    'F' => { panic!("Attribute commands not supported yet.") },
-                    'A' => { panic!("Attribute commands not supported yet.") },
-                    'O' => { panic!("Attribute commands not supported yet.") },
-                    'D' => { panic!("Attribute commands not supported yet.") },
-                    _ => line_parse_failure(line, index)
-                }
+                'M' => { gerber_doc.commands.push(FunctionCode::MCode(MCode::EndOfFile).into())}                
                 _ => line_parse_failure(line, index)
             }           
         }
@@ -114,10 +117,12 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     return gerber_doc
 }
 
+
 // print a simple message in case the parser hits a dead end
 fn line_parse_failure(line: &str, index: usize) {
     panic!("Cannot parse line:\n{} | {}", index, line)
 } 
+
 
 // parse a Gerber Comment (e.g. 'G04 This is a comment*')
 fn parse_comment(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
@@ -126,6 +131,7 @@ fn parse_comment(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
         gerber_doc.commands.push(FunctionCode::GCode(GCode::Comment(comment.to_string())).into());
     } 
 }
+
 
 // parse a Gerber unit statement (e.g. '%MOMM*%')
 fn parse_units(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
@@ -141,6 +147,7 @@ fn parse_units(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
         } else { panic!("Incorrect gerber units format")}
     }
 }
+
 
 // parse a Gerber format spec statement (e.g. '%FSLAX23Y23*%')
 fn parse_format_spec(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
@@ -159,6 +166,7 @@ fn parse_format_spec(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
         gerber_doc.format_specification = Some(fs);
     } 
 }
+
 
 // parse a Gerber aperture definition e.g. '%ADD44R, 2.0X3.0*%')
 fn parse_aperture_defs(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
@@ -209,12 +217,14 @@ fn parse_aperture_defs(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
     }
 }
 
+
 fn parse_aperture_selection(linechars: Chars, gerber_doc: &mut GerberDoc) {
     let aperture_code = linechars.as_str().parse::<i32>().expect("Failed to parse aperture selection");
     assert!(gerber_doc.apertures.contains_key(&aperture_code), "Cannot select an aperture that is not defined");
     gerber_doc.commands.push(FunctionCode::DCode(DCode::SelectAperture(
         aperture_code)).into());    
 }
+
 
 // TODO clean up the except statements a bit
 // parse a Gerber interpolation command (e.g. 'X2000Y40000I300J50000D01*')
@@ -242,6 +252,7 @@ fn parse_interpolation(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
     } else { panic!("Unable to parse D01 (interpolate) command")}    
 }
 
+
 // TODO clean up the except statements a bit
 // parse a Gerber move or flash command (e.g. 'X2000Y40000D02*')
 fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &mut GerberDoc, flash: bool) {
@@ -262,7 +273,8 @@ fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &mut GerberDoc, flash
     } else { panic!("Unable to parse D02 (move) or D03 (flash) command")}    
 }
 
-fn parse_load_mirroring(mut linechars: Chars, gerber_doc: &mut GerberDoc ) {
+
+fn parse_load_mirroring(mut linechars: Chars, gerber_doc: &mut GerberDoc) {
     // match linechars.next().unwrap() {
     //     'N' => gerber_doc.commands.push(value), //LMN
     //     'Y' => gerber_doc.commands.push(value), // LMY
@@ -276,7 +288,170 @@ fn parse_load_mirroring(mut linechars: Chars, gerber_doc: &mut GerberDoc ) {
     panic!("Load Mirroring (LM) command not supported yet.")
 }
 
-fn coordinates_from_gerber(mut x_as_int: i64, mut y_as_int: i64, fs: CoordinateFormat) -> Coordinates {
+
+/// Parse an Aperture Attribute (%TF.<AttributeName>[,<AttributeValue>]*%) into Command
+/// 
+/// For now we consider two types of TA statements:
+/// 1. Aperture Function (AperFunction) with field: String
+/// 2. Drill tolerance (DrillTolerance) with fields: [1] num [2] num 
+/// 
+/// ⚠️ Any other Attributes (which seem to be valid within the gerber spec) we will **fail** to parse!
+/// 
+/// ⚠️ This parsing statement needs a lot of tests and validation at the current stage!
+fn parse_file_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
+    let attr_args = get_attr_args(line);
+    if attr_args.len() >= 2 {  // we must have at least 1 field
+        //println!("TF args are: {:?}", attr_args);
+        let file_attr: FileAttribute = match attr_args[0] {
+            "Part" => match attr_args[1]{
+                "Single" => FileAttribute::Part(Part::Single),
+                "Array" => FileAttribute::Part(Part::Array),
+                "FabricationPanel" => FileAttribute::Part(Part::FabricationPanel),
+                "Coupon" => FileAttribute::Part(Part::Coupon),
+                _ => FileAttribute::Part(Part::Other(attr_args[1].to_string())),
+            },
+            // TODO do FileFunction properly, but needs changes in gerber-types
+            "FileFunction" => FileAttribute::FileFunction(FileFunction::Other(attr_args[1].to_string())),  
+            "FilePolarity" => match attr_args[1]{
+                "Positive" => FileAttribute::FilePolarity(FilePolarity::Positive),
+                "Negative" => FileAttribute::FilePolarity(FilePolarity::Negative),
+                _ => panic!("Unsupported Polarity type '{}' in TF statement", attr_args[1]) 
+            },
+            "Md5" => FileAttribute::Md5(attr_args[1].to_string()),
+            _ => panic!("The AttributeName '{}' is currently not supported for File Attributes", attr_args[0])
+        };
+        gerber_doc.commands.push(
+            ExtendedCode::FileAttribute(file_attr).into()
+        )
+    }
+    else { panic!("Unable to parse file attribute (TF)" )}
+}
+
+
+/// Parse an Aperture Attribute (%TA.<AttributeName>[,<AttributeValue>]*%) into Command
+/// 
+/// For now we consider two types of TA statements:
+/// 1. Aperture Function (AperFunction) with field: String
+/// 2. Drill tolerance (DrillTolerance) with fields: [1] num [2] num 
+/// 
+/// ⚠️ Any other Attributes (which seem to be valid within the gerber spec) we will **fail** to parse!
+/// 
+/// ⚠️ This parsing statement needs a lot of tests and validation at the current stage!
+fn parse_aperture_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
+    let attr_args = get_attr_args(line);
+    println!("TA ARGS: {:?}", attr_args);
+    if attr_args.len() >= 2 {  // we must have at least 1 field
+        //println!("TA args are: {:?}", attr_args);
+        match attr_args[0] {
+            "AperFunction" => {
+                let aperture_func: ApertureFunction = match attr_args[1] {
+                    "ViaDrill" => ApertureFunction::ViaDrill,
+                    "BackDrill" => ApertureFunction::BackDrill,
+                    "ComponentDrill" => ApertureFunction::ComponentDrill{ press_fit: None },  // TODO parse this
+                    "CastellatedDrill" => ApertureFunction::CastellatedDrill,
+                    "MechanicalDrill" => ApertureFunction::MechanicalDrill { function: None }, // TODO parse this
+                    "Slot" => ApertureFunction::Slot,
+                    "CutOut" => ApertureFunction::CutOut,
+                    "Cavity" => ApertureFunction::Cavity,
+                    "OtherDrill" => ApertureFunction::OtherDrill(attr_args[2].to_string()),
+                    "ComponentPad " => ApertureFunction::ComponentPad{ press_fit: None }, // TODO parse this
+                    "SmdPad" => match attr_args[2] {
+                        "CopperDefined" => ApertureFunction::SmdPad(SmdPadType::CopperDefined),
+                        "SoldermaskDefined" => ApertureFunction::SmdPad(SmdPadType::SoldermaskDefined),
+                        _ => panic!("Unsupported SmdPad type in TA statement")
+                    },
+                    "BgaPad" => match attr_args[2] {
+                        "CopperDefined" => ApertureFunction::BgaPad(SmdPadType::CopperDefined),
+                        "SoldermaskDefined" => ApertureFunction::BgaPad(SmdPadType::SoldermaskDefined),
+                        _ => panic!("Unsupported SmdPad type in TA statement")
+                    },
+                    "HeatsinkPad" => ApertureFunction::HeatsinkPad,
+                    "TestPad" => ApertureFunction::TestPad,
+                    "CastellatedPad" => ApertureFunction::CastellatedPad,
+                    "FiducialPad" => match attr_args[2]{
+                        "Global" => ApertureFunction::FiducialPad(FiducialScope::Global),
+                        "Local" => ApertureFunction::FiducialPad(FiducialScope::Local),
+                        _ => panic!("Unsupported FiducialPad type in TA statement"),
+                    },
+                    "ThermalReliefPad" => ApertureFunction::ThermalReliefPad,
+                    "WasherPad" => ApertureFunction::WasherPad,
+                    "AntiPad" => ApertureFunction::AntiPad,
+                    "OtherPad" => ApertureFunction::OtherPad(attr_args[2].to_string()),
+                    "Conductor" => ApertureFunction::Conductor,
+                    "NonConductor" => ApertureFunction::NonConductor,
+                    "CopperBalancing" => ApertureFunction::CopperBalancing,
+                    "Border" => ApertureFunction::Border,
+                    "OtherCopper" => ApertureFunction::OtherCopper(attr_args[2].to_string()),
+                    "Profile" => ApertureFunction::Profile,
+                    "NonMaterial" => ApertureFunction::NonMaterial,
+                    "Material" => ApertureFunction::Material,
+                    "Other" => ApertureFunction::Other(attr_args[2].to_string()),
+                    _ => panic!("The  Aperture Function '{}' is currently not supported (/known)", attr_args[1])
+                };
+                gerber_doc.commands.push(
+                    ExtendedCode::ApertureAttribute(ApertureAttribute::ApertureFunction(aperture_func)).into()
+                )
+            },
+            "DrillTolerance" => {
+                gerber_doc.commands.push(
+                    ExtendedCode::ApertureAttribute(ApertureAttribute::DrillTolerance{
+                         plus: attr_args[1].parse::<f64>().unwrap(),
+                         minus: attr_args[2].parse::<f64>().unwrap()
+                         }).into()
+                )
+            }
+            _ => panic!("The AttributeName '{}' is currently not supported for Aperture Attributes", attr_args[0])
+        }        
+    }
+    else { panic!("Unable to parse aperture attribute (TA)" )} 
+}
+
+
+fn parse_object_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
+    // let attr_args = get_attr_args(line);
+    // if !attr_args.is_empty() {
+    //     println!("TO args are: {:?}", attr_args)
+    // }
+    // else { panic!("Unable to parse object attribute (TO)" )}
+    panic!("Object Attribute (%TO.<AttributeName>[,<AttributeValue>]*%) commands are not yet supported")
+}
+
+
+fn parse_delete_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
+    // let attr_args = get_attr_args(line);
+    // if !attr_args.is_empty() {
+    //     if attr_args.len() > 1 {
+    //         panic!("Unable to parse delete attribute (TD) - TD does not have any fields.");
+    //     }
+
+    //     println!("TD args are: {:?}", attr_args)
+    // }
+    // else { panic!("Unable to parse delete attribute (TD)" )}
+    panic!("Delete Attribute (%TD.<AttributeName>*%) commands are not yet supported")
+}
+
+
+/// Extract the individual elements (AttributeName and Fields) from Chars
+/// 
+/// The arguments of the attribute statement can have whitespace as this will be trimmed. 
+/// `attribute_chars` argument must be the **trimmed line** from the gerber file
+/// with the **first three characters removed**. E.g. ".Part,single*%" not "%TF.Part,single*%"
+/// ```
+/// # use gerber_parser::parser::get_attr_args;
+/// let attribute_chars = ".DrillTolerance, 0.02, 0.01 *%".chars();
+/// 
+/// let arguments = get_attr_args(attribute_chars);
+/// assert_eq!(arguments, vec!["DrillTolerance","0.02","0.01"])
+/// ```
+pub fn get_attr_args(mut attribute_chars: Chars) -> Vec<&str>{
+    attribute_chars.next_back().unwrap();
+    attribute_chars.next_back().unwrap();
+    attribute_chars.next().unwrap();
+    attribute_chars.as_str().split(",").map(|el| el.trim()).collect()
+} 
+
+
+pub fn coordinates_from_gerber(mut x_as_int: i64, mut y_as_int: i64, fs: CoordinateFormat) -> Coordinates {
     // we have the raw gerber string as int but now have to convert it to nano precision format 
     // (i.e. 6 decimal precision) as this is what CoordinateNumber uses internally
     let factor = (6u8 - fs.decimal) as u32;
@@ -285,7 +460,8 @@ fn coordinates_from_gerber(mut x_as_int: i64, mut y_as_int: i64, fs: CoordinateF
     Coordinates::new(CoordinateNumber::new(x_as_int), CoordinateNumber::new(y_as_int), fs)
 }
 
-fn coordinates_offset_from_gerber(mut x_as_int: i64, mut y_as_int: i64, fs: CoordinateFormat) -> CoordinateOffset {
+
+pub fn coordinates_offset_from_gerber(mut x_as_int: i64, mut y_as_int: i64, fs: CoordinateFormat) -> CoordinateOffset {
     // we have the raw gerber string as int but now have to convert it to nano precision format 
     // (i.e. 6 decimal precision) as this is what CoordinateNumber uses internally
     let factor = (6u8 - fs.decimal) as u32;

@@ -1,67 +1,21 @@
-use gerber_types::{GCode, FunctionCode, Command, Unit, CoordinateFormat, Aperture, Circle,
-     Rectangular, Polygon};
+use gerber_types::{GCode, DCode, FunctionCode, Command, Unit, CoordinateFormat, Aperture, Circle,
+     Rectangular, Polygon, Operation, ExtendedCode, ApertureAttribute, ApertureFunction, FileAttribute,
+    Part, FileFunction, FilePolarity};
 use::std::collections::HashMap;
 
-use gerber_parser::parser::parse_gerber;
+use gerber_parser::parser::{ parse_gerber, coordinates_from_gerber, coordinates_offset_from_gerber};
 use gerber_parser::gerber_doc::empty_gerber;
 
 mod utils;
 
-static SAMPLE_GERBER_1: &str ="    
-%FSLAX23Y23*%
-%MOMM*%
 
-G04 Define the primive apertures*
-%ADD801C, 0.005*%
-%ADD802C, 0.01*%
-%ADD803R, 0.01X0.15*%
-
-G04 Chip outline*
-D801*
-
-G75*
-G01*
-X4000Y1500D02*
-X4000Y18D01*
-X4000Y-18D02*
-X4000Y-1500D01*
-X200Y-1500D01*
-X0Y-750D01*
-X-200Y-1500D01*
-X-4000Y-1500D01*
-X-4000Y-18D01*
-X-4000Y18D02*
-X-4000Y1500D01*
-X-200Y1500D01*
-X0Y750D01*
-X200Y1500D01*
-X4000Y1500D01*
-
-D802*
-X0Y0D03*
-X0Y300D03*
-X0Y-300D03*
-X0Y600D03*
-X0Y-600D03*
-
-D803*
-X0Y150D03*
-X0Y450D03*
-X0Y-150D03*
-X0Y-450D03*
-X0Y-450D03*
-X0Y-720D03*
-X0Y720D03*
-M02*
-";
-
-#[test]
-fn test_full_gerber() {
-    let gerber_reader = utils::gerber_to_reader(&SAMPLE_GERBER_1);
-    let gbr = parse_gerber(gerber_reader);
-    println!("{}",&gbr);
-    assert_eq!(gbr, empty_gerber());
-}
+// #[test]
+// fn test_full_gerber() {
+//     let gerber_reader = utils::gerber_to_reader(&SAMPLE_GERBER_1);
+//     let gbr = parse_gerber(gerber_reader);
+//     println!("{}",&gbr);
+//     assert_eq!(gbr, empty_gerber());
+// }
 
 #[test]
 fn format_specification() {
@@ -78,13 +32,9 @@ fn format_specification() {
     M02*        
     ");
 
-    let sample_gerber_1 = utils::gerber_to_reader(&SAMPLE_GERBER_1);
-
     assert_eq!(parse_gerber(reader_fs_1).format_specification, Some(CoordinateFormat::new(1, 5)));
 
     assert_eq!(parse_gerber(reader_fs_2).format_specification, Some(CoordinateFormat::new(3, 6)));
-
-    assert_eq!(parse_gerber(sample_gerber_1).format_specification, Some(CoordinateFormat::new(2, 3)));
 }
 
 #[test]
@@ -114,7 +64,7 @@ fn units() {
 }
 
 #[test]
-fn comments() {
+fn G04_comments() {
     let reader = utils::gerber_to_reader("
     G04 Comment before typical configuration lines*
     %FSLAX23Y23*%
@@ -131,6 +81,155 @@ fn comments() {
         Command::FunctionCode(FunctionCode::GCode(GCode::Comment("Comment before typical configuration lines".to_string()))),
         Command::FunctionCode(FunctionCode::GCode(GCode::Comment("And now a comment after them".to_string())))])
 }
+
+#[test]
+fn aperture_selection() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    %ADD22R, 0.01X0.15*%
+
+    G04 Select some valid apertures*
+    D22*
+    D999*
+    D22*
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::FunctionCode(FunctionCode::DCode(DCode::SelectAperture(_))) => true, _ => false}).collect()};
+
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::FunctionCode(FunctionCode::DCode(DCode::SelectAperture(22.into()))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::SelectAperture(999.into()))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::SelectAperture(22.into())))])
+}
+
+#[test]
+// Test the D01* statements (linear)
+fn D01_interpolation_linear() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    D999*
+
+    X4000Y5000D01*
+    X0Y0D01*
+    X-1000Y-30000D01*
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(_, _)))) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(
+            coordinates_from_gerber(4000, 5000, fs), None)))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(
+            coordinates_from_gerber(0, 0, fs), None)))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(
+            coordinates_from_gerber(-1000, -30000, fs), None))))])
+}
+
+
+#[test]
+// Test the D01* statements (circular)
+fn D01_interpolation_circular() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    D999*
+
+    X0Y0D01*
+    X-1000Y-30000I200J-5000D01*
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(_, _)))) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(
+            coordinates_from_gerber(0, 0, fs), None)))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(
+            coordinates_from_gerber(-1000, -30000, fs),
+            Some(coordinates_offset_from_gerber(200, -5000, fs))))))])
+}
+
+#[test]
+// Test the D02* statements 
+fn DO2_move_to_command() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    D999*
+
+    X0Y-333D02*
+    X300Y300D01*
+
+    X5555Y-12D02*
+    X-300Y-300D01*
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Move(_)))) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Move(
+            coordinates_from_gerber(0, -333, fs))))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Move(
+            coordinates_from_gerber(5555, -12, fs)))))])
+}
+
+#[test]
+// Test the D03* statements 
+fn DO3_flash_command() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    D999*
+
+    X4000Y-5000D03*
+    X0Y0D03*
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(_)))) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(
+            coordinates_from_gerber(4000, -5000, fs))))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(
+            coordinates_from_gerber(0, 0, fs)))))])
+}
+
+
 
 #[test]
 fn aperture_definitions() {
@@ -165,6 +264,66 @@ fn aperture_definitions() {
         (125, Aperture::Obround(Rectangular {x: 0.1,y: 0.15,hole_diameter: Some(0.019)})),
         (126, Aperture::Polygon(Polygon{diameter: 1.0,vertices: 7,rotation: Some(5.5),hole_diameter: Some(0.7)})),
         ]))
+}
+
+#[test]
+// TODO: make more exhaustive
+fn TA_aperture_attributes() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    %TA.AperFunction, WasherPad*%
+    %TA.AperFunction,Profile*%
+    %TA.AperFunction,   Other,   teststring*%
+
+    %TA.DrillTolerance, 0.032, 0.022*%
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::ExtendedCode(ExtendedCode::ApertureAttribute(_)) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::ExtendedCode(ExtendedCode::ApertureAttribute(ApertureAttribute::ApertureFunction(ApertureFunction::WasherPad))),
+        Command::ExtendedCode(ExtendedCode::ApertureAttribute(ApertureAttribute::ApertureFunction(ApertureFunction::Profile))),
+        Command::ExtendedCode(ExtendedCode::ApertureAttribute(ApertureAttribute::ApertureFunction(ApertureFunction::Other("teststring".to_string())))),
+        Command::ExtendedCode(ExtendedCode::ApertureAttribute(ApertureAttribute::DrillTolerance{ plus: 0.032, minus: 0.022 }))
+        ])
+}
+
+#[test]
+// TODO: make more exhaustive
+fn TF_file_attributes() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+
+    %TF.Part, Array*%
+    %TF.Part, custom part type*%
+    %TF.FileFunction, test part*%
+    %TF.FilePolarity, Negative*%
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::ExtendedCode(ExtendedCode::FileAttribute(_)) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::Part(Part::Array))),
+        Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::Part(Part::Other("custom part type".to_string())))),
+        Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::FileFunction(FileFunction::Other("test part".to_string())))),
+        Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::FilePolarity(FilePolarity::Negative))),
+        ])
 }
 
 #[test]
@@ -238,4 +397,23 @@ fn nonexistent_aperture_selection() {
     M02*  
     ");
     parse_gerber(reader);
+}
+
+#[test]
+#[should_panic]
+// This statement should fail as this is not within the format specification (2 integer, 3 decimal)
+fn coordinates_not_within_format() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    D999*
+
+    X100000Y0D01*
+
+    M02*        
+    ");
+
+    parse_gerber(reader).commands;
 }
