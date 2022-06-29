@@ -4,7 +4,11 @@ version = "0.1.1"
 edition = "2018"
 authors = ["Nemo nemoandrea@outlook.com"]
 description = "A simple gerber parser for the gerber-types crate"
+readme = "README.md" 
+documentation = "https://docs.rs/gerber_parser"
+homepage = "https://github.com/NemoAndrea/gerber-parser"
 repository = "https://github.com/NemoAndrea/gerber-parser" 
+
 
 [dependencies]
 regex = "1"
