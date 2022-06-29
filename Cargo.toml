@@ -6,6 +6,7 @@ authors = ["Nemo nemoandrea@outlook.com"]
 description = "A simple gerber parser for the gerber-types crate"
 readme = "README.md" 
 documentation = "https://docs.rs/gerber_parser"
+license = "AGPL-3.0"
 homepage = "https://github.com/NemoAndrea/gerber-parser"
 repository = "https://github.com/NemoAndrea/gerber-parser" 
 
