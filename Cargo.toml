@@ -1,6 +1,6 @@
 [package]
 name = "gerber_parser"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2018"
 authors = ["Nemo nemoandrea@outlook.com"]
 description = "A simple gerber parser for the gerber-types crate"
