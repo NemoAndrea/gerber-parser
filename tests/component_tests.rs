@@ -1,10 +1,9 @@
 use gerber_types::{GCode, DCode, FunctionCode, Command, Unit, CoordinateFormat, Aperture, Circle,
      Rectangular, Polygon, Operation, ExtendedCode, ApertureAttribute, ApertureFunction, FileAttribute,
-    Part, FileFunction, FilePolarity};
+    Part, FileFunction, FilePolarity, ObjectAttribute};
 use::std::collections::HashMap;
 
 use gerber_parser::parser::{ parse_gerber, coordinates_from_gerber, coordinates_offset_from_gerber};
-use gerber_parser::gerber_doc::empty_gerber;
 
 mod utils;
 
@@ -14,7 +13,7 @@ mod utils;
 //     let gerber_reader = utils::gerber_to_reader(&SAMPLE_GERBER_1);
 //     let gbr = parse_gerber(gerber_reader);
 //     println!("{}",&gbr);
-//     assert_eq!(gbr, empty_gerber());
+//     assert_eq!(gbr, GerberDoc::new());
 // }
 
 #[test]
@@ -229,6 +228,35 @@ fn DO3_flash_command() {
             coordinates_from_gerber(0, 0, fs)))))])
 }
 
+#[test]
+// Gerber spec allows for ommitted coordinates. This means that 'X100D03*' and 'Y100D03*' are
+// valid statements.
+fn omitted_coordinate() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+    %ADD999C, 0.01*%    
+    D999*
+
+    G04 here the last coordinate is (0,0) - by construction*
+    Y-3000D03*
+    G04 Now we set X=1234, but we keep the last Y coordinate, namely -3000*
+    X1234D03*
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(_)))) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(
+            coordinates_from_gerber(0, -3000, fs))))),
+        Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(
+            coordinates_from_gerber(1234, -3000, fs)))))])
+}
 
 
 #[test]
@@ -306,7 +334,7 @@ fn TF_file_attributes() {
     %ADD999C, 0.01*%
 
     %TF.Part, Array*%
-    %TF.Part, custom part type*%
+    %TF.Part, Other, funnypartname*%
     %TF.FileFunction, test part*%
     %TF.FilePolarity, Negative*%
 
@@ -320,10 +348,41 @@ fn TF_file_attributes() {
     let fs =  CoordinateFormat::new(2,3);
     assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
         Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::Part(Part::Array))),
-        Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::Part(Part::Other("custom part type".to_string())))),
+        Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::Part(Part::Other("funnypartname".to_string())))),
         Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::FileFunction(FileFunction::Other("test part".to_string())))),
         Command::ExtendedCode(ExtendedCode::FileAttribute(FileAttribute::FilePolarity(FilePolarity::Negative))),
         ])
+}
+
+#[test]
+// TODO: make more exhaustive
+fn TO_object_attributes() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+
+    %TO.DoNotForget, 32, fragile*%
+    %TO.N, 0.22*%
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::ExtendedCode(ExtendedCode::ObjectAttribute(_)) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::ExtendedCode(ExtendedCode::ObjectAttribute(ObjectAttribute{
+            attribute_name: "DoNotForget".to_string(),
+            values: vec!["32".to_string(), "fragile".to_string()]
+        })),
+        Command::ExtendedCode(ExtendedCode::ObjectAttribute(ObjectAttribute{
+            attribute_name: "N".to_string(),
+            values: vec!["0.22".to_string()]
+        }))])
 }
 
 #[test]
@@ -400,6 +459,7 @@ fn nonexistent_aperture_selection() {
 }
 
 #[test]
+#[ignore]
 #[should_panic]
 // This statement should fail as this is not within the format specification (2 integer, 3 decimal)
 fn coordinates_not_within_format() {

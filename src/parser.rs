@@ -2,10 +2,11 @@ use std::{io::{Read, BufReader, BufRead}, fs::File};
 use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat,
      Aperture, Circle, Rectangular, Polygon, MCode, DCode, Polarity,
       InterpolationMode, QuadrantMode, Operation, Coordinates, CoordinateNumber, CoordinateOffset,
-       ApertureAttribute, ApertureFunction, FiducialScope, SmdPadType, FileAttribute, FilePolarity, Part, FileFunction};
+       ApertureAttribute, ApertureFunction, FiducialScope, SmdPadType, FileAttribute, FilePolarity,
+        Part, FileFunction, ObjectAttribute};
 use regex::Regex;
 use std::str::Chars;
-use crate::gerber_doc::{ GerberDoc, empty_gerber};
+use crate::gerber_doc::{ GerberDoc};
 
 /// Parse a gerber string (in BufReader) to a GerberDoc
 /// 
@@ -14,7 +15,11 @@ use crate::gerber_doc::{ GerberDoc, empty_gerber};
 /// your Gerber file is valid according to the spec. Some of the parsing steps are greedy - they may
 /// match something unexpected (rather than panicking) if there is a typo/fault in your file.
 pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
-    let mut gerber_doc = empty_gerber();
+    let mut gerber_doc = GerberDoc::new();
+    // The gerber spec allows omission of X or Y statements in D01/2/3 commands, where the omitted
+    // coordinate is to be taken as whatever was used in the previous coordinate-using command
+    // By default the 'last coordinate' can be taken to be (0,0)
+    let mut last_coords = (0i64,0i64);
 
     // naively define some regex terms
     // TODO see which ones can be done without regex for better performance?
@@ -22,8 +27,8 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     let re_comment = Regex::new(r"G04 (.*)\*").unwrap();
     let re_formatspec = Regex::new(r"%FSLAX(.*)Y(.*)\*%").unwrap();
     let re_aperture = Regex::new(r"%ADD([0-9]+)([A-Z]),(.*)\*%").unwrap();
-    let re_interpolation = Regex::new(r"X(-?[0-9]+)Y(-?[0-9]+)I?(-?[0-9]+)?J?(-?[0-9]+)?D01\*").unwrap();
-    let re_move_or_flash = Regex::new(r"X(-?[0-9]+)Y(-?[0-9]+)D0[2-3]*").unwrap();
+    let re_interpolation = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?I?(-?[0-9]+)?J?(-?[0-9]+)?D01\*").unwrap();
+    let re_move_or_flash = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?D0[2-3]*").unwrap();
     // TODO: handle escaped characters for attributes
     let re_attributes = Regex::new(r"%T[A-Z].([A-Z]+?),?").unwrap();  
 
@@ -94,10 +99,10 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                         _ => line_parse_failure(line, index)
                     }
                 },
-                'X' => {linechars.next_back(); match linechars.next_back().unwrap() { 
-                    '1' => parse_interpolation(line, &re_interpolation,&mut gerber_doc), // D01
-                    '2' => parse_move_or_flash(line, &re_move_or_flash,&mut gerber_doc, false), // D02
-                    '3' => parse_move_or_flash(line, &re_move_or_flash,&mut gerber_doc, true), // D03
+                'X' | 'Y' => {linechars.next_back(); match linechars.next_back().unwrap() { 
+                    '1' => parse_interpolation(line, &re_interpolation,&mut gerber_doc, &mut last_coords), // D01
+                    '2' => parse_move_or_flash(line, &re_move_or_flash,&mut gerber_doc, &mut last_coords, false), // D02
+                    '3' => parse_move_or_flash(line, &re_move_or_flash,&mut gerber_doc, &mut last_coords, true), // D03
                     _ => line_parse_failure(line, index)
                 }},
                 'D' => { // select aperture D<num>*                   
@@ -228,10 +233,22 @@ fn parse_aperture_selection(linechars: Chars, gerber_doc: &mut GerberDoc) {
 
 // TODO clean up the except statements a bit
 // parse a Gerber interpolation command (e.g. 'X2000Y40000I300J50000D01*')
-fn parse_interpolation(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
+fn parse_interpolation(line: &str, re: &Regex, gerber_doc: &mut GerberDoc, last_coords: &mut (i64, i64)) {
     if let Some(regmatch) = re.captures(line) {
-        let x_coord = regmatch.get(1).expect("Unable to match X coord").as_str().trim().parse::<i64>().unwrap();
-        let y_coord = regmatch.get(2).expect("Unable to match Y coord").as_str().trim().parse::<i64>().unwrap();
+        let x_coord = match regmatch.get(1) {
+            Some(x) => { let new_x = x.as_str().trim().parse::<i64>().unwrap();
+                last_coords.0 = new_x;
+                new_x
+            }
+            None => last_coords.0, // if match is None, then the coordinate must have been implicit
+        };
+        let y_coord = match regmatch.get(2) {
+            Some(y) => { let new_y = y.as_str().trim().parse::<i64>().unwrap();
+                last_coords.1 = new_y;
+                new_y
+            }
+            None => last_coords.1, // if match is None, then the coordinate must have been implicit
+        };
 
         if let Some(_) = regmatch.get(3){  //  we have X,Y,I,J parameters and we are doing circular interpolation
             let i_offset = regmatch.get(3).expect("Unable to match I offset").as_str().trim().parse::<i64>().unwrap();
@@ -249,16 +266,29 @@ fn parse_interpolation(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
                      None)))
                 .into());
         }            
-    } else { panic!("Unable to parse D01 (interpolate) command")}    
+    } else { panic!("Unable to parse D01 (interpolate) command: {}", line)}    
 }
 
 
 // TODO clean up the except statements a bit
 // parse a Gerber move or flash command (e.g. 'X2000Y40000D02*')
-fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &mut GerberDoc, flash: bool) {
+fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &mut GerberDoc, last_coords: &mut (i64, i64), flash: bool) {
     if let Some(regmatch) = re.captures(line) {
-        let x_coord = regmatch.get(1).expect("Unable to match X coord").as_str().trim().parse::<i64>().unwrap();
-        let y_coord = regmatch.get(2).expect("Unable to match Y coord").as_str().trim().parse::<i64>().unwrap();
+        let x_coord = match regmatch.get(1) {
+            Some(x) => { let new_x = x.as_str().trim().parse::<i64>().unwrap();
+                last_coords.0 = new_x;
+                new_x
+            }
+            None => last_coords.0, // if match is None, then the coordinate must have been implicit
+        };
+        let y_coord = match regmatch.get(2) {
+            Some(y) => { let new_y = y.as_str().trim().parse::<i64>().unwrap();
+                last_coords.1 = new_y;
+                new_y
+            }
+            None => last_coords.1, // if match is None, then the coordinate must have been implicit
+        };
+
         if flash {
             gerber_doc.commands.push(FunctionCode::DCode(DCode::Operation(
                 Operation::Flash(coordinates_from_gerber(x_coord, y_coord,
@@ -308,7 +338,8 @@ fn parse_file_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
                 "Array" => FileAttribute::Part(Part::Array),
                 "FabricationPanel" => FileAttribute::Part(Part::FabricationPanel),
                 "Coupon" => FileAttribute::Part(Part::Coupon),
-                _ => FileAttribute::Part(Part::Other(attr_args[1].to_string())),
+                "Other" => FileAttribute::Part(Part::Other(attr_args[2].to_string())),
+                _ => panic!("Unsupported Part type '{}' in TF statement", attr_args[1])
             },
             // TODO do FileFunction properly, but needs changes in gerber-types
             "FileFunction" => FileAttribute::FileFunction(FileFunction::Other(attr_args[1].to_string())),  
@@ -408,26 +439,33 @@ fn parse_aperture_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc)
 
 
 fn parse_object_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
-    // let attr_args = get_attr_args(line);
-    // if !attr_args.is_empty() {
-    //     println!("TO args are: {:?}", attr_args)
-    // }
-    // else { panic!("Unable to parse object attribute (TO)" )}
-    panic!("Object Attribute (%TO.<AttributeName>[,<AttributeValue>]*%) commands are not yet supported")
+    let attr_args = get_attr_args(line);
+    if attr_args.len() >= 2 {
+        gerber_doc.commands.push(
+            ExtendedCode::ObjectAttribute(ObjectAttribute{
+                attribute_name: attr_args[0].to_string(),
+                values: attr_args[1..].into_iter().map(|val| val.to_string()).collect()
+            }).into()
+        )
+    } else if attr_args.len() == 1 {
+        panic!("Unable to add Object Attribute (TO) - TO statements need at least 1 field value on top of the name: '{}'", attr_args[0]);
+    } else {
+         panic!("Unable to parse object attribute (TO)");
+    }
 }
 
 
 fn parse_delete_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
-    // let attr_args = get_attr_args(line);
-    // if !attr_args.is_empty() {
-    //     if attr_args.len() > 1 {
-    //         panic!("Unable to parse delete attribute (TD) - TD does not have any fields.");
-    //     }
-
-    //     println!("TD args are: {:?}", attr_args)
-    // }
-    // else { panic!("Unable to parse delete attribute (TD)" )}
-    panic!("Delete Attribute (%TD.<AttributeName>*%) commands are not yet supported")
+    let attr_args = get_attr_args(line);
+    if attr_args.len() == 1 {   
+        gerber_doc.commands.push(
+            ExtendedCode::DeleteAttribute(attr_args[0].to_string()).into()
+        )        
+    } else if attr_args.len() > 1 {
+        panic!("Unable to parse delete attribute (TD) - TD should not have any fields, got field '{}'", attr_args[0]);
+    } else {
+        panic!("Unable to parse delete attribute (TD)");
+    }
 }
 
 

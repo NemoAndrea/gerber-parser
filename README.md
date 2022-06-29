@@ -25,9 +25,8 @@ let commands:Vec<Command> = gerber_doc.to_commands();
 
 Currently missing
 
-* All `TD`, `TO` commands 
 * All `AM` commands
-* `LM`, `LR`, `LS` commands
+* `LM`, `LR`, `LS` commands (note: these are deprecated in the spec)
 * `SR` commands
 * `AB` commands
 
@@ -42,5 +41,4 @@ In addition, comments in the header section of the file (i.e. unit type declarat
 * Make parsing a bit cleaner, with `Result`
 * Reduce the number of panics 
 * Make error messages clearer
-* Mini-tests for all commands
 * Do proper coordinate check (compatibility with `format specification`)

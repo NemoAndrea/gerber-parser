@@ -13,12 +13,9 @@ fn dicechip_outline_to_rust_and_back() {
 %ADD802C,0.01*%
 %ADD803R,0.01X0.1*%
 G04 Template gerber file by Nemo Andrea*
-
 G04 Define the primive apertures*
-
 G04 Chip outline*
 D801*
-
 G75*
 G01*
 X4000Y1500D02*
@@ -32,14 +29,12 @@ X-200Y1500D01*
 X0Y750D01*
 X200Y1500D01*
 X4000Y1500D01*
-
 D802*
 X0Y0D03*
 X0Y300D03*
 X0Y-300D03*
 X0Y600D03*
 X0Y-600D03*
-
 D803*
 X0Y150D03*
 X0Y450D03*
@@ -48,7 +43,7 @@ X0Y-450D03*
 X0Y-450D03*
 X0Y-720D03*
 X0Y720D03*
-M02*        
+M02*
 ";
     let reader = utils::gerber_to_reader(&gbr_string);
 

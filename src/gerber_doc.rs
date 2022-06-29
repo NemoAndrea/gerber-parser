@@ -17,26 +17,33 @@ pub struct GerberDoc {
     pub commands: Vec<Command>    
 }
 
-// instantiate a empty gerber document ready for parsing, for convenience
-pub fn empty_gerber() -> GerberDoc {
-    GerberDoc {
-        units: None,
-        format_specification: None,
-        apertures: HashMap::new(),
-        commands: Vec::new()}
-}
-
-
 impl GerberDoc {
+    // instantiate a empty gerber document ready for parsing
+    pub fn new() -> GerberDoc {
+        GerberDoc {
+            units: None,
+            format_specification: None,
+            apertures: HashMap::new(),
+            commands: Vec::new()
+        }
+    }
+
     /// Turns a GerberDoc into a &vec of gerber-types Commands
     /// 
     /// Get a representation of a gerber document *purely* in terms of elements provided
-    /// in the gerber-types rust crate. 
+    /// in the gerber-types rust crate. Note that aperture definitions will be sorted by code number
+    /// with lower codes being at the top of the command. This is independent of their order during
+    /// parsing.
     pub fn to_commands(mut self) -> Vec<Command> {
         let mut gerber_cmds: Vec<Command> = Vec::new();
         gerber_cmds.push(ExtendedCode::CoordinateFormat(self.format_specification.unwrap()).into());
         gerber_cmds.push(ExtendedCode::Unit(self.units.unwrap()).into());
-        for (code, aperture) in self.apertures {
+
+        // we add the apertures to the list, but we sort by code. This means the order of the output
+        // is reproducible every time. 
+        let mut apertures = self.apertures.into_iter().collect::<Vec<_>>();
+        apertures.sort_by_key(|tup| tup.0);
+        for (code, aperture) in apertures {
             gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code: code,
                 aperture: aperture}).into())
