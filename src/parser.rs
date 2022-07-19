@@ -3,7 +3,7 @@ use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateF
      Aperture, Circle, Rectangular, Polygon, MCode, DCode, Polarity,
       InterpolationMode, QuadrantMode, Operation, Coordinates, CoordinateNumber, CoordinateOffset,
        ApertureAttribute, ApertureFunction, FiducialScope, SmdPadType, FileAttribute, FilePolarity,
-        Part, FileFunction, ObjectAttribute};
+        Part, FileFunction, ObjectAttribute, StepAndRepeat};
 use regex::Regex;
 use std::str::Chars;
 use crate::gerber_doc::{ GerberDoc};
@@ -31,6 +31,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     let re_move_or_flash = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?D0[2-3]*").unwrap();
     // TODO: handle escaped characters for attributes
     let re_attributes = Regex::new(r"%T[A-Z].([A-Z]+?),?").unwrap();  
+    let re_step_repeat = Regex::new(r"%SRX([0-9]+)Y([0-9]+)I(\d+\.?\d*)J(\d+\.?\d*)\*%").unwrap();  
 
     for (index, line) in reader.lines().enumerate() {
         let rawline = line.unwrap(); 
@@ -95,7 +96,16 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                             'O' => { parse_object_attribute(linechars, &re_attributes, &mut gerber_doc) },
                             'D' => { parse_delete_attribute(linechars, &re_attributes, &mut gerber_doc) },
                             _ => line_parse_failure(line, index)
-                        }
+                        },
+                        'S' => match linechars.next().unwrap() { 
+                            'R' => match linechars.next().unwrap() {
+                                'X' => parse_step_repeat_open(line, &re_step_repeat, &mut gerber_doc),
+                                // a statement %SR*% closes a step repeat command, which has no parameters
+                                '*' => gerber_doc.commands.push(ExtendedCode::StepAndRepeat(StepAndRepeat::Close).into()),
+                                _ => line_parse_failure(line, index)
+                            },
+                            _ => line_parse_failure(line, index),                            
+                        },
                         _ => line_parse_failure(line, index)
                     }
                 },
@@ -316,6 +326,20 @@ fn parse_load_mirroring(mut linechars: Chars, gerber_doc: &mut GerberDoc) {
     //     _ => panic!("Invalid load mirroring (LM) command: {}", linechars.as_str())
     // }
     panic!("Load Mirroring (LM) command not supported yet.")
+}
+
+// a step and repeat open statement has four (required) parameters that we need to extract
+// X (pos int) Y (pos int), I (decimal), J (decimal)
+fn parse_step_repeat_open(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
+    println!("SR line: {}", &line);
+    if let Some(regmatch) = re.captures(line) {
+        gerber_doc.commands.push(ExtendedCode::StepAndRepeat(StepAndRepeat::Open{
+            repeat_x: regmatch.get(1).unwrap().as_str().trim().parse::<u32>().unwrap(),
+            repeat_y: regmatch.get(2).unwrap().as_str().trim().parse::<u32>().unwrap(),
+            distance_x: regmatch.get(3).unwrap().as_str().trim().parse::<f64>().unwrap(),
+            distance_y: regmatch.get(4).unwrap().as_str().trim().parse::<f64>().unwrap(),
+        }).into());
+    } else { panic!("Unable to parse Step and Repeat opening command")} 
 }
 
 

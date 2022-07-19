@@ -1,6 +1,6 @@
 use gerber_types::{GCode, DCode, FunctionCode, Command, Unit, CoordinateFormat, Aperture, Circle,
      Rectangular, Polygon, Operation, ExtendedCode, ApertureAttribute, ApertureFunction, FileAttribute,
-    Part, FileFunction, FilePolarity, ObjectAttribute};
+    Part, FileFunction, FilePolarity, ObjectAttribute, StepAndRepeat};
 use::std::collections::HashMap;
 
 use gerber_parser::parser::{ parse_gerber, coordinates_from_gerber, coordinates_offset_from_gerber};
@@ -256,6 +256,42 @@ fn omitted_coordinate() {
             coordinates_from_gerber(0, -3000, fs))))),
         Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(
             coordinates_from_gerber(1234, -3000, fs)))))])
+}
+
+
+#[test]
+// Test Step and Repeat command (%SR*%)
+fn step_and_repeat() {
+    let reader = utils::gerber_to_reader("
+    %FSLAX23Y23*%
+    %MOMM*%
+
+    %ADD999C, 0.01*%
+    D999*
+
+    %SRX12Y6I3.33J8.120*%
+    X4000Y5000D01*
+    X0Y0D01*
+    X-1000Y-30000D01*
+    %SR*%
+
+    M02*        
+    ");
+
+    let filter_commands = |cmds:Vec<Command>| -> Vec<Command> {
+        cmds.into_iter().filter(|cmd| match cmd {
+                Command::ExtendedCode(ExtendedCode::StepAndRepeat(_)) => true, _ => false}).collect()};
+
+    let fs =  CoordinateFormat::new(2,3);
+    assert_eq!(filter_commands(parse_gerber(reader).commands), vec![
+        Command::ExtendedCode(ExtendedCode::StepAndRepeat(StepAndRepeat::Open{
+            repeat_x: 12,
+            repeat_y: 6,
+            distance_x: 3.33,
+            distance_y: 8.12,
+        })),
+        Command::ExtendedCode(ExtendedCode::StepAndRepeat(StepAndRepeat::Close)),
+    ])
 }
 
 

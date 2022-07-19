@@ -27,7 +27,6 @@ Currently missing
 
 * All `AM` commands
 * `LM`, `LR`, `LS` commands (note: these are deprecated in the spec)
-* `SR` commands
 * `AB` commands
 
 Partial:
@@ -40,5 +39,5 @@ In addition, comments in the header section of the file (i.e. unit type declarat
 
 * Make parsing a bit cleaner, with `Result`
 * Reduce the number of panics 
-* Make error messages clearer
+* Make error messages clearer (avoid plain unwraps in places where errors can realistically occur)
 * Do proper coordinate check (compatibility with `format specification`)
