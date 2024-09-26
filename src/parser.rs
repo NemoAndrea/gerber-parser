@@ -3,7 +3,7 @@ use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateF
      Aperture, Circle, Rectangular, Polygon, MCode, DCode, Polarity,
       InterpolationMode, QuadrantMode, Operation, Coordinates, CoordinateNumber, CoordinateOffset,
        ApertureAttribute, ApertureFunction, FiducialScope, SmdPadType, FileAttribute, FilePolarity,
-        Part, FileFunction, ObjectAttribute, StepAndRepeat};
+        Part, FileFunction, StepAndRepeat};
 use regex::Regex;
 use std::str::Chars;
 use crate::gerber_doc::{ GerberDoc};
@@ -78,7 +78,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                         'F' => { parse_format_spec(line, &re_formatspec, &mut gerber_doc) },
                         'A' => match linechars.next().unwrap() {
                             'D' => { parse_aperture_defs(line, &re_aperture, &mut gerber_doc) }, // AD
-                            'M' => { panic!("Aperture Macros (AM) are not supported yet.") }, // AM 
+                            'M' => { println!("Aperture Macros (AM) are not supported yet.") }, // AM
                             _ => line_parse_failure(line, index)
                         }, 
                         'L' => match linechars.next().unwrap() {
@@ -95,7 +95,6 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                         'T' => match linechars.next().unwrap() {
                             'F' => { parse_file_attribute(linechars, &re_attributes,  &mut gerber_doc) },
                             'A' => { parse_aperture_attribute(linechars, &re_attributes, &mut gerber_doc) },
-                            'O' => { parse_object_attribute(linechars, &re_attributes, &mut gerber_doc) },
                             'D' => { parse_delete_attribute(linechars, &re_attributes, &mut gerber_doc) },
                             _ => line_parse_failure(line, index)
                         },
@@ -142,7 +141,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
 
 // print a simple message in case the parser hits a dead end
 fn line_parse_failure(line: &str, index: usize) {
-    panic!("Cannot parse line:\n{} | {}", index, line)
+    println!("Cannot parse line:\n{} | {}", index, line)
 } 
 
 
@@ -488,23 +487,6 @@ fn parse_aperture_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc)
         }        
     }
     else { panic!("Unable to parse aperture attribute (TA)" )} 
-}
-
-
-fn parse_object_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
-    let attr_args = get_attr_args(line);
-    if attr_args.len() >= 2 {
-        gerber_doc.commands.push(
-            ExtendedCode::ObjectAttribute(ObjectAttribute{
-                attribute_name: attr_args[0].to_string(),
-                values: attr_args[1..].into_iter().map(|val| val.to_string()).collect()
-            }).into()
-        )
-    } else if attr_args.len() == 1 {
-        panic!("Unable to add Object Attribute (TO) - TO statements need at least 1 field value on top of the name: '{}'", attr_args[0]);
-    } else {
-         panic!("Unable to parse object attribute (TO)");
-    }
 }
 
 

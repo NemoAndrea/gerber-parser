@@ -13,7 +13,7 @@ repository = "https://github.com/NemoAndrea/gerber-parser"
 
 [dependencies]
 regex = "1"
-gerber-types = "0.2.0"
+gerber-types = "0.3.0"
 stringreader = "0.1.1"
 
 [dev-dependencies]
