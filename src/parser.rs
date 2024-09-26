@@ -29,6 +29,8 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     let re_aperture = Regex::new(r"%ADD([0-9]+)([A-Z]),(.*)\*%").unwrap();
     let re_interpolation = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?I?(-?[0-9]+)?J?(-?[0-9]+)?D01\*").unwrap();
     let re_move_or_flash = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?D0[2-3]*").unwrap();
+    let re_image_name = Regex::new(r"%IN(.*)\*%").unwrap();
+    let re_image_polarity = Regex::new(r"%IP(.*)\*%").unwrap();
     // TODO: handle escaped characters for attributes
     let re_attributes = Regex::new(r"%T[A-Z].([A-Z]+?),?").unwrap();  
     let re_step_repeat = Regex::new(r"%SRX([0-9]+)Y([0-9]+)I(\d+\.?\d*)J(\d+\.?\d*)\*%").unwrap();  
@@ -106,6 +108,11 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                             },
                             _ => line_parse_failure(line, index),                            
                         },
+                        'I' => match linechars.next().unwrap() {
+                            'N' => { parse_image_name(line, &re_image_name, &mut gerber_doc) }, // Image Name, 8.1.3. Deprecated, but still used by fusion 360.
+                            'P' => { parse_image_polarity(line, &re_image_polarity, &mut gerber_doc) }, // Image Polarity, basically useless, but used by fusion
+                            _ => line_parse_failure(line, index)
+                        }
                         _ => line_parse_failure(line, index)
                     }
                 },
@@ -145,6 +152,28 @@ fn parse_comment(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
         let comment = regmatch.get(1).unwrap().as_str();
         gerber_doc.commands.push(FunctionCode::GCode(GCode::Comment(comment.to_string())).into());
     } 
+}
+
+/// parse an image name. This is optional and deprecated, but included in all exports from Fusion 360
+fn parse_image_name(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
+    if gerber_doc.image_name != None { panic!{"Cannot set image name twice in the same document!"} }
+    if let Some(regmatch) = re.captures(line) {
+        let comment = regmatch.get(1).unwrap().as_str();
+        gerber_doc.image_name = Some(String::from(comment))
+    }
+}
+
+fn parse_image_polarity(line: &str, re: &Regex, gerber_doc: &mut GerberDoc) {
+    // TODO: Handle this better.
+    // Currently just avoiding a panic.
+    // from the GERBER standard:
+    //      "IP can only be used once, at the beginning of the file.
+    //      Sometimes used, and then usually as %IPPOS*%
+    //      to confirm the default – a positive image; it then
+    //      has no effect. As it is not clear how %IPNEG*%
+    //      must be handled it is probably a waste of time to
+    //      try to fully implement it, and sufficient to give a
+    //      warning if an image is negative."
 }
 
 

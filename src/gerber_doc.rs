@@ -13,8 +13,10 @@ pub struct GerberDoc {
     pub format_specification: Option<CoordinateFormat>,
     /// map of apertures which can be used in draw commands later on in the document. 
     pub apertures: HashMap::<i32, Aperture>,
-    // Anything else, draw commands, comments, attributes 
-    pub commands: Vec<Command>    
+    // Anything else, draw commands, comments, attributes
+    pub commands: Vec<Command>,
+    /// Image Name, 8.1.3. Deprecated, but still used by fusion 360.
+    pub image_name: Option<String>
 }
 
 impl GerberDoc {
@@ -24,7 +26,8 @@ impl GerberDoc {
             units: None,
             format_specification: None,
             apertures: HashMap::new(),
-            commands: Vec::new()
+            commands: Vec::new(),
+            image_name: None,
         }
     }
 
