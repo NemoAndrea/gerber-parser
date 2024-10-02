@@ -1,18 +1,34 @@
-use std::{io::{Read, BufReader, BufRead}, fs::File};
-use std::num::ParseIntError;
+use std::io::{Read, BufReader, BufRead};
+
 use gerber_types::{Command, ExtendedCode, Unit, FunctionCode, GCode, CoordinateFormat,
                    Aperture, Circle, Rectangular, Polygon, MCode, DCode, Polarity,
                    InterpolationMode, QuadrantMode, Operation, Coordinates, CoordinateNumber, CoordinateOffset,
                    ApertureAttribute, ApertureFunction, FiducialScope, SmdPadType, FileAttribute, FilePolarity,
                    Part, FileFunction, StepAndRepeat};
-use regex::{Captures, Regex};
+use regex::Regex;
 use std::str::Chars;
 use crate::error::GerberParserError;
-use crate::error::GerberParserError::TriedToFormatTwice;
 use crate::gerber_doc::{ GerberDoc};
+use lazy_regex::*;
+
+// naively define some regex terms
+// TODO see which ones can be done without regex for better performance?
+
+static RE_UNITS: Lazy<Regex> = lazy_regex!(r"%MO(.*)\*%");
+static RE_COMMENT: Lazy<Regex> = lazy_regex!(r"G04 (.*)\*");
+static RE_FORMAT_SPEC: Lazy<Regex> = lazy_regex!(r"%FSLAX(.*)Y(.*)\*%");
+static RE_APERTURE: Lazy<Regex> = lazy_regex!(r"%ADD([0-9]+)([A-Z]),(.*)\*%");
+static RE_INTERPOLATION: Lazy<Regex> = lazy_regex!(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?I?(-?[0-9]+)?J?(-?[0-9]+)?D01\*");
+static RE_MOVE_OR_FLASH: Lazy<Regex> = lazy_regex!(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?D0[2-3]*");
+static RE_IMAGE_NAME: Lazy<Regex> = lazy_regex!(r"%IN(.*)\*%");
+static RE_IMAGE_POLARITY: Lazy<Regex> = lazy_regex!(r"%IP(.*)\*%");
+// TODO: handle escaped characters for attributes
+static RE_ATTRIBUTES: Lazy<Regex> = lazy_regex!(r"%T[A-Z].([A-Z]+?),?");
+static RE_STEP_REPEAT: Lazy<Regex> = lazy_regex!(r"%SRX([0-9]+)Y([0-9]+)I(\d+\.?\d*)J(\d+\.?\d*)\*%");
+
 
 /// Parse a gerber string (in BufReader) to a GerberDoc
-/// 
+///
 /// Take the contents of a Gerber (.gbr) file and parse it to a GerberDoc struct. The parsing does
 /// some semantic checking, but is certainly not exhaustive - so don't rely on it to check if
 /// your Gerber file is valid according to the spec. Some of the parsing steps are greedy - they may
@@ -23,20 +39,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     // coordinate is to be taken as whatever was used in the previous coordinate-using command
     // By default the 'last coordinate' can be taken to be (0,0)
     let mut last_coords = (0i64,0i64);
-
-    // naively define some regex terms
-    // TODO see which ones can be done without regex for better performance?
-    let re_units = Regex::new(r"%MO(.*)\*%").unwrap();
-    let re_comment = Regex::new(r"G04 (.*)\*").unwrap();
-    let re_formatspec = Regex::new(r"%FSLAX(.*)Y(.*)\*%").unwrap();
-    let re_aperture = Regex::new(r"%ADD([0-9]+)([A-Z]),(.*)\*%").unwrap();
-    let re_interpolation = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?I?(-?[0-9]+)?J?(-?[0-9]+)?D01\*").unwrap();
-    let re_move_or_flash = Regex::new(r"X?(-?[0-9]+)?Y?(-?[0-9]+)?D0[2-3]*").unwrap();
-    let re_image_name = Regex::new(r"%IN(.*)\*%").unwrap();
-    let re_image_polarity = Regex::new(r"%IP(.*)\*%").unwrap();
-    // TODO: handle escaped characters for attributes
-    let re_attributes = Regex::new(r"%T[A-Z].([A-Z]+?),?").unwrap();  
-    let re_step_repeat = Regex::new(r"%SRX([0-9]+)Y([0-9]+)I(\d+\.?\d*)J(\d+\.?\d*)\*%").unwrap();  
+    
 
     for (index, line) in reader.lines().enumerate() {
         let raw_line = line.expect("IO Error reading line"); 
@@ -58,7 +61,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                                 GCode::InterpolationMode(InterpolationMode::ClockwiseCircular)).into())), // G02
                             '3' => gerber_doc.commands.push(Ok(FunctionCode::GCode(
                                 GCode::InterpolationMode(InterpolationMode::CounterclockwiseCircular)).into())), // G03
-                            '4' => {gerber_doc.commands.push(parse_comment(line, &re_comment)) }, // G04
+                            '4' => {gerber_doc.commands.push(parse_comment(line)) }, // G04
                             _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string()))),
                         },
                         '3'=> match linechars.next().unwrap() {
@@ -78,7 +81,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                 '%' => {
                     match linechars.next().unwrap() {
                         'M' => { 
-                            match parse_units(line, &re_units, &gerber_doc){
+                            match parse_units(line, &gerber_doc){
                                 Ok(units) => {
                                     gerber_doc.units = Some(units);
                                 }
@@ -88,7 +91,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                             }
                         },
                         'F' => { 
-                            match parse_format_spec(line, &re_units, &gerber_doc){
+                            match parse_format_spec(line, &gerber_doc){
                                 Ok(format_spec) => {
                                     gerber_doc.format_specification = Some(format_spec);
                                 }
@@ -99,7 +102,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                         },
                         'A' => match linechars.next().unwrap() {
                             'D' => { 
-                                match parse_aperture_defs(line, &re_aperture, &gerber_doc){
+                                match parse_aperture_defs(line, &gerber_doc){
                                     Ok((code, ap)) => {
                                         gerber_doc.apertures.insert(code, ap); 
                                         // Safety: While insert can 'fail' (misbehave) if the key 
@@ -126,14 +129,16 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                             _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string())))
                         },
                         'T' => match linechars.next().unwrap() {
-                            'F' => { parse_file_attribute(linechars, &re_attributes,  &mut gerber_doc) },
-                            'A' => { parse_aperture_attribute(linechars, &re_attributes, &mut gerber_doc) },
-                            'D' => { parse_delete_attribute(linechars, &re_attributes, &mut gerber_doc) },
+                            'F' => {
+                                gerber_doc.commands.push(parse_file_attribute(linechars).map(|file_attr| {ExtendedCode::FileAttribute(file_attr).into()}));
+                            },
+                            'A' => { gerber_doc.commands.push(parse_aperture_attribute(linechars, &gerber_doc)) },
+                            'D' => { parse_delete_attribute(linechars, &mut gerber_doc) },
                             _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string())))
                         },
                         'S' => match linechars.next().unwrap() { 
                             'R' => match linechars.next().unwrap() {
-                                'X' => gerber_doc.commands.push(parse_step_repeat_open(line, &re_step_repeat, &gerber_doc)),
+                                'X' => gerber_doc.commands.push(parse_step_repeat_open(line)),
                                 // a statement %SR*% closes a step repeat command, which has no parameters
                                 '*' => gerber_doc.commands.push(Ok(ExtendedCode::StepAndRepeat(StepAndRepeat::Close).into())),
                                 _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string())))
@@ -142,7 +147,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                         },
                         'I' => match linechars.next().unwrap() {
                             'N' => { // Image Name, 8.1.3. Deprecated, but still used by fusion 360.
-                                match parse_image_name(line, &re_image_name, &gerber_doc) {
+                                match parse_image_name(line, &gerber_doc) {
                                     Ok(name) => {
                                         gerber_doc.image_name = Some(name);
                                     }
@@ -158,9 +163,9 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                     }
                 },
                 'X' | 'Y' => {linechars.next_back(); match linechars.next_back().unwrap() { 
-                    '1' => gerber_doc.commands.push(parse_interpolation(line, &re_interpolation, &gerber_doc, &mut last_coords)), // D01
-                    '2' => gerber_doc.commands.push(parse_move_or_flash(line, &re_move_or_flash,&gerber_doc, &mut last_coords, false)), // D02
-                    '3' => gerber_doc.commands.push(parse_move_or_flash(line, &re_move_or_flash,&gerber_doc, &mut last_coords, true)), // D03
+                    '1' => gerber_doc.commands.push(parse_interpolation(line, &gerber_doc, &mut last_coords)), // D01
+                    '2' => gerber_doc.commands.push(parse_move_or_flash(line, &gerber_doc, &mut last_coords, false)), // D02
+                    '3' => gerber_doc.commands.push(parse_move_or_flash(line, &gerber_doc, &mut last_coords, true)), // D03
                     _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string())))
                 }},
                 'D' => { // select aperture D<num>*                   
@@ -180,63 +185,63 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
 
 
 /// parse a Gerber Comment (e.g. 'G04 This is a comment*')
-fn parse_comment(line: &str, re: &Regex) -> Result<Command, GerberParserError> {
-    match re.captures(line) {
+fn parse_comment(line: &str) -> Result<Command, GerberParserError> {
+    match RE_COMMENT.captures(line) {
         Some(regmatch) => {
-            let comment = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str();
+            let comment = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_COMMENT.clone()))?.as_str();
             Ok(FunctionCode::GCode(GCode::Comment(comment.to_string())).into())
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_COMMENT.clone())) }
     }
     
 }
 
 /// parse an image name. This is optional and deprecated, but included in all exports from Fusion 360
-fn parse_image_name(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result<String, GerberParserError> {
+fn parse_image_name(line: &str, gerber_doc: &GerberDoc) -> Result<String, GerberParserError> {
     if gerber_doc.image_name.is_some(){
         Err(GerberParserError::TriedToSetImageNameTwice(line.to_string()))
     } else {
-        match re.captures(line) {
+        match RE_IMAGE_NAME.captures(line) {
             Some(regmatch) => {
-                let image_name = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str();
+                let image_name = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_IMAGE_NAME.clone()))?.as_str();
                 Ok(String::from(image_name))
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_IMAGE_NAME.clone())) }
         }
     }
 }
 
 
 /// parse a Gerber unit statement (e.g. '%MOMM*%')
-fn parse_units(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result<Unit, GerberParserError> {
+fn parse_units(line: &str, gerber_doc: &GerberDoc) -> Result<Unit, GerberParserError> {
     // Check that the units are not set yet (that would imply the set unit command is present twice)
     if gerber_doc.units.is_some() { 
         Err(GerberParserError::TriedToSetUnitsTwice(line.to_string()))
     } else {
-        match re.captures(line) {
+        match RE_UNITS.captures(line) {
             Some(regmatch) => {
-                let units_str = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str();
+                let units_str = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_UNITS.clone()))?.as_str();
                 match units_str {
                     "MM" => Ok(Unit::Millimeters),
                     "IN" => Ok(Unit::Inches),
                     _ => Err(GerberParserError::InvalidUnitFormat(line.to_string())),
                 }
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_UNITS.clone())) }
         }
     }
 }
 
 
 /// parse a Gerber format spec statement (e.g. '%FSLAX23Y23*%')
-fn parse_format_spec(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result<CoordinateFormat, GerberParserError> {
+fn parse_format_spec(line: &str, gerber_doc: &GerberDoc) -> Result<CoordinateFormat, GerberParserError> {
     // Ensure that FS was not set before, which would imply two FS statements in the same doc
     if gerber_doc.format_specification.is_some() { 
-        Err(TriedToFormatTwice(line.to_string())) 
+        Err(GerberParserError::TriedToFormatTwice(line.to_string())) 
     } else {
-        match re.captures(line) {
+        match RE_UNITS.captures(line) {
             Some(regmatch) => {
-                let mut fs_chars = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str().chars();
+                let mut fs_chars = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_UNITS.clone()))?.as_str().chars();
                 let integer:u8 = parse_char(fs_chars.next().ok_or(GerberParserError::ParseFormatErrorWrongNumDigits(line.to_string()))?)?;
                 let decimal:u8 = parse_char(fs_chars.next().ok_or(GerberParserError::ParseFormatErrorWrongNumDigits(line.to_string()))?)?;
 
@@ -247,7 +252,7 @@ fn parse_format_spec(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result<C
 
                 Ok(CoordinateFormat::new(integer, decimal))
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_UNITS.clone())) }
         }
     }
 }
@@ -259,16 +264,15 @@ fn parse_char(char_in: char) -> Result<u8, GerberParserError> {
 
 
 // parse a Gerber aperture definition e.g. '%ADD44R, 2.0X3.0*%')
-fn parse_aperture_defs(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result<(i32, Aperture), GerberParserError> {
+fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Aperture), GerberParserError> {
     // aperture definitions
-    // TODO: prevent the same aperture code being used twice
-    match re.captures(line) {
+    match RE_APERTURE.captures(line) {
         Some(regmatch) => {
-            let code_str = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str();
+            let code_str = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_APERTURE.clone()))?.as_str();
             let code = parse_aperture_code(code_str)?;
 
-            let aperture_type = regmatch.get(2).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str();
-            let aperture_args: Vec<&str> = regmatch.get(3).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str().split("X").collect();
+            let aperture_type = regmatch.get(2).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_APERTURE.clone()))?.as_str();
+            let aperture_args: Vec<&str> = regmatch.get(3).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_APERTURE.clone()))?.as_str().split("X").collect();
             
             if gerber_doc.apertures.contains_key(&code){
                 return Err(GerberParserError::ApertureDefinedTwice(code, line.to_string()));
@@ -310,7 +314,7 @@ fn parse_aperture_defs(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result
                 unknown_type => { Err(GerberParserError::UnknownApertureType(unknown_type.to_string(), line.to_string())) }
             }
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_APERTURE.clone())) }
     }
 }
 
@@ -348,8 +352,8 @@ fn parse_aperture_selection(linechars: Chars, gerber_doc: &GerberDoc) -> Result<
 
 // TODO clean up the except statements a bit
 // parse a Gerber interpolation command (e.g. 'X2000Y40000I300J50000D01*')
-fn parse_interpolation(line: &str, re: &Regex, gerber_doc: &GerberDoc, last_coords: &mut (i64, i64)) -> Result<Command, GerberParserError> {
-    match re.captures(line) {
+fn parse_interpolation(line: &str, gerber_doc: &GerberDoc, last_coords: &mut (i64, i64)) -> Result<Command, GerberParserError> {
+    match RE_INTERPOLATION.captures(line) {
         Some(regmatch) => {
             let x_coord = match regmatch.get(1) {
                 Some(x) => { 
@@ -385,14 +389,14 @@ fn parse_interpolation(line: &str, re: &Regex, gerber_doc: &GerberDoc, last_coor
                     .into())
             }
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_INTERPOLATION.clone())) }
     }
 }
 
 
 // parse a Gerber move or flash command (e.g. 'X2000Y40000D02*')
-fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &GerberDoc, last_coords: &mut (i64, i64), flash: bool) -> Result<Command, GerberParserError> {
-    match re.captures(line) {
+fn parse_move_or_flash(line: &str, gerber_doc: &GerberDoc, last_coords: &mut (i64, i64), flash: bool) -> Result<Command, GerberParserError> {
+    match RE_MOVE_OR_FLASH.captures(line) {
         Some(regmatch) => {
             let x_coord = match regmatch.get(1) {
                 Some(x) => {
@@ -423,7 +427,7 @@ fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &GerberDoc, last_coor
                 Ok(FunctionCode::DCode(DCode::Operation(Operation::Move(coords))).into())
             }
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_MOVE_OR_FLASH.clone())) }
     }   
 }
 
@@ -444,17 +448,17 @@ fn parse_move_or_flash(line: &str, re: &Regex, gerber_doc: &GerberDoc, last_coor
 
 // a step and repeat open statement has four (required) parameters that we need to extract
 // X (pos int) Y (pos int), I (decimal), J (decimal)
-fn parse_step_repeat_open(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Result<Command, GerberParserError> {
-    match re.captures(line) {
+fn parse_step_repeat_open(line: &str) -> Result<Command, GerberParserError> {
+    match RE_STEP_REPEAT.captures(line) {
         Some(regmatch) => {
             Ok(ExtendedCode::StepAndRepeat(StepAndRepeat::Open{
-                repeat_x: parse_coord::<u32>(regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str())?,
-                repeat_y: parse_coord::<u32>(regmatch.get(2).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str())?,
-                distance_x: parse_coord::<f64>(regmatch.get(3).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str())?,
-                distance_y: parse_coord::<f64>(regmatch.get(4).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), re.clone()))?.as_str())?,
+                repeat_x: parse_coord::<u32>(regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_STEP_REPEAT.clone()))?.as_str())?,
+                repeat_y: parse_coord::<u32>(regmatch.get(2).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_STEP_REPEAT.clone()))?.as_str())?,
+                distance_x: parse_coord::<f64>(regmatch.get(3).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_STEP_REPEAT.clone()))?.as_str())?,
+                distance_y: parse_coord::<f64>(regmatch.get(4).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_STEP_REPEAT.clone()))?.as_str())?,
             }).into())
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), re.clone())) }
+        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_STEP_REPEAT.clone())) }
     }
 }
 
@@ -468,34 +472,36 @@ fn parse_step_repeat_open(line: &str, re: &Regex, gerber_doc: &GerberDoc) -> Res
 /// ⚠️ Any other Attributes (which seem to be valid within the gerber spec) we will **fail** to parse!
 /// 
 /// ⚠️ This parsing statement needs a lot of tests and validation at the current stage!
-fn parse_file_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
-    let attr_args = get_attr_args(line);
+fn parse_file_attribute(line: Chars) -> Result<FileAttribute, GerberParserError> {
+
+    let raw_line = line.as_str().to_string();
+    
+    let attr_args = get_attr_args(line)?;
     if attr_args.len() >= 2 {  // we must have at least 1 field
         //println!("TF args are: {:?}", attr_args);
-        let file_attr: FileAttribute = match attr_args[0] {
+        match attr_args[0] {
             "Part" => match attr_args[1]{
-                "Single" => FileAttribute::Part(Part::Single),
-                "Array" => FileAttribute::Part(Part::Array),
-                "FabricationPanel" => FileAttribute::Part(Part::FabricationPanel),
-                "Coupon" => FileAttribute::Part(Part::Coupon),
-                "Other" => FileAttribute::Part(Part::Other(attr_args[2].to_string())),
-                _ => panic!("Unsupported Part type '{}' in TF statement", attr_args[1])
+                "Single" => Ok(FileAttribute::Part(Part::Single)),
+                "Array" => Ok(FileAttribute::Part(Part::Array)),
+                "FabricationPanel" => Ok(FileAttribute::Part(Part::FabricationPanel)),
+                "Coupon" => Ok(FileAttribute::Part(Part::Coupon)),
+                "Other" => Ok(FileAttribute::Part(Part::Other(attr_args[2].to_string()))),
+                _ => Err(GerberParserError::UnsupportedPartType(attr_args[1].to_string()))
             },
             // TODO do FileFunction properly, but needs changes in gerber-types
-            "FileFunction" => FileAttribute::FileFunction(FileFunction::Other(attr_args[1].to_string())),  
+            "FileFunction" => Ok(FileAttribute::FileFunction(FileFunction::Other(attr_args[1].to_string()))),  
             "FilePolarity" => match attr_args[1]{
-                "Positive" => FileAttribute::FilePolarity(FilePolarity::Positive),
-                "Negative" => FileAttribute::FilePolarity(FilePolarity::Negative),
-                _ => panic!("Unsupported Polarity type '{}' in TF statement", attr_args[1]) 
+                "Positive" => Ok(FileAttribute::FilePolarity(FilePolarity::Positive)),
+                "Negative" => Ok(FileAttribute::FilePolarity(FilePolarity::Negative)),
+                _ => Err(GerberParserError::UnsupportedPolarityType(attr_args[1].to_string()))
             },
-            "Md5" => FileAttribute::Md5(attr_args[1].to_string()),
-            _ => panic!("The AttributeName '{}' is currently not supported for File Attributes", attr_args[0])
-        };
-        gerber_doc.commands.push(
-            ExtendedCode::FileAttribute(file_attr).into()
-        )
+            "Md5" => Ok(FileAttribute::Md5(attr_args[1].to_string())),
+            _ => Err(GerberParserError::UnsupportedFileAttribute(attr_args[0].to_string()))
+        }
     }
-    else { panic!("Unable to parse file attribute (TF)" )}
+    else {
+        Err(GerberParserError::FileAttributeParseError(raw_line))
+    }
 }
 
 
@@ -508,8 +514,8 @@ fn parse_file_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
 /// ⚠️ Any other Attributes (which seem to be valid within the gerber spec) we will **fail** to parse!
 /// 
 /// ⚠️ This parsing statement needs a lot of tests and validation at the current stage!
-fn parse_aperture_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
-    let attr_args = get_attr_args(line);
+fn parse_aperture_attribute(line: Chars, gerber_doc: &mut GerberDoc) -> Result<Command, GerberParserError> {
+    let attr_args = get_attr_args(line)?;
     println!("TA ARGS: {:?}", attr_args);
     if attr_args.len() >= 2 {  // we must have at least 1 field
         //println!("TA args are: {:?}", attr_args);
@@ -575,11 +581,13 @@ fn parse_aperture_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc)
         }        
     }
     else { panic!("Unable to parse aperture attribute (TA)" )} 
+    
+    dog
 }
 
 
-fn parse_delete_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
-    let attr_args = get_attr_args(line);
+fn parse_delete_attribute(line: Chars, gerber_doc: &mut GerberDoc) {
+    let attr_args = get_attr_args(line)?;
     if attr_args.len() == 1 {   
         gerber_doc.commands.push(
             ExtendedCode::DeleteAttribute(attr_args[0].to_string()).into()
@@ -604,11 +612,11 @@ fn parse_delete_attribute(line: Chars, re: &Regex, gerber_doc: &mut GerberDoc) {
 /// let arguments = get_attr_args(attribute_chars);
 /// assert_eq!(arguments, vec!["DrillTolerance","0.02","0.01"])
 /// ```
-pub fn get_attr_args(mut attribute_chars: Chars) -> Vec<&str>{
-    attribute_chars.next_back().unwrap();
-    attribute_chars.next_back().unwrap();
-    attribute_chars.next().unwrap();
-    attribute_chars.as_str().split(",").map(|el| el.trim()).collect()
+pub fn get_attr_args(mut attribute_chars: Chars) -> Result<Vec<&str>, GerberParserError> {
+    attribute_chars.next_back().ok_or(GerberParserError::InvalidFileAttribute(attribute_chars.as_str().to_string()))?;
+    attribute_chars.next_back().ok_or(GerberParserError::InvalidFileAttribute(attribute_chars.as_str().to_string()))?;
+    attribute_chars.next().ok_or(GerberParserError::InvalidFileAttribute(attribute_chars.as_str().to_string()))?;
+    Ok(attribute_chars.as_str().split(",").map(|el| el.trim()).collect())
 } 
 
 

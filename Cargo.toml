@@ -16,6 +16,7 @@ regex = "1"
 gerber-types = "0.3.0"
 stringreader = "0.1.1"
 thiserror = "1.0.64"
+lazy-regex = "3.3.0"
 
 [dev-dependencies]
 stringreader = "0.1.1"
