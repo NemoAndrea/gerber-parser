@@ -13,7 +13,6 @@ use lazy_regex::*;
 
 // naively define some regex terms
 // TODO see which ones can be done without regex for better performance?
-
 static RE_UNITS: Lazy<Regex> = lazy_regex!(r"%MO(.*)\*%");
 static RE_COMMENT: Lazy<Regex> = lazy_regex!(r"G04 (.*)\*");
 static RE_FORMAT_SPEC: Lazy<Regex> = lazy_regex!(r"%FSLAX(.*)Y(.*)\*%");
@@ -132,8 +131,8 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
                             'F' => {
                                 gerber_doc.commands.push(parse_file_attribute(linechars).map(|file_attr| {ExtendedCode::FileAttribute(file_attr).into()}));
                             },
-                            'A' => { gerber_doc.commands.push(parse_aperture_attribute(linechars, &gerber_doc)) },
-                            'D' => { parse_delete_attribute(linechars, &mut gerber_doc) },
+                            'A' => { gerber_doc.commands.push(parse_aperture_attribute(linechars)) },
+                            'D' => { gerber_doc.commands.push(parse_delete_attribute(linechars)) },
                             _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string())))
                         },
                         'S' => match linechars.next().unwrap() { 
@@ -179,7 +178,15 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     }
 
     // TODO: check that we ended with a gerber EOF command
-
+    match gerber_doc.commands.last(){
+        None => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile))}
+        Some(command) => {
+            match command{
+                Ok(Command::FunctionCode(FunctionCode::MCode(MCode::EndOfFile))) => {}
+                _ => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile))}
+            }
+        }
+    }
     return gerber_doc
 }
 
@@ -239,20 +246,20 @@ fn parse_format_spec(line: &str, gerber_doc: &GerberDoc) -> Result<CoordinateFor
     if gerber_doc.format_specification.is_some() { 
         Err(GerberParserError::TriedToFormatTwice(line.to_string())) 
     } else {
-        match RE_UNITS.captures(line) {
+        match RE_FORMAT_SPEC.captures(line) {
             Some(regmatch) => {
-                let mut fs_chars = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_UNITS.clone()))?.as_str().chars();
+                let mut fs_chars = regmatch.get(1).ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_FORMAT_SPEC.clone()))?.as_str().chars();
                 let integer:u8 = parse_char(fs_chars.next().ok_or(GerberParserError::ParseFormatErrorWrongNumDigits(line.to_string()))?)?;
                 let decimal:u8 = parse_char(fs_chars.next().ok_or(GerberParserError::ParseFormatErrorWrongNumDigits(line.to_string()))?)?;
 
                 // the gerber spec states that the integer value can be at most 6
-                if integer >= 1 && integer <= 6 {
+                if integer < 1 || integer > 6 {
                     return Err(GerberParserError::ParseFormatErrorInvalidDigit(integer))
                 }
 
                 Ok(CoordinateFormat::new(integer, decimal))
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_UNITS.clone())) }
+            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_FORMAT_SPEC.clone())) }
         }
     }
 }
@@ -514,14 +521,14 @@ fn parse_file_attribute(line: Chars) -> Result<FileAttribute, GerberParserError>
 /// ⚠️ Any other Attributes (which seem to be valid within the gerber spec) we will **fail** to parse!
 /// 
 /// ⚠️ This parsing statement needs a lot of tests and validation at the current stage!
-fn parse_aperture_attribute(line: Chars, gerber_doc: &mut GerberDoc) -> Result<Command, GerberParserError> {
+fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
+    let raw_line = line.as_str().to_string();
     let attr_args = get_attr_args(line)?;
     println!("TA ARGS: {:?}", attr_args);
     if attr_args.len() >= 2 {  // we must have at least 1 field
-        //println!("TA args are: {:?}", attr_args);
         match attr_args[0] {
             "AperFunction" => {
-                let aperture_func: ApertureFunction = match attr_args[1] {
+                Ok(ExtendedCode::ApertureAttribute(ApertureAttribute::ApertureFunction(match attr_args[1] {
                     "ViaDrill" => ApertureFunction::ViaDrill,
                     "BackDrill" => ApertureFunction::BackDrill,
                     "ComponentDrill" => ApertureFunction::ComponentDrill{ press_fit: None },  // TODO parse this
@@ -535,12 +542,12 @@ fn parse_aperture_attribute(line: Chars, gerber_doc: &mut GerberDoc) -> Result<C
                     "SmdPad" => match attr_args[2] {
                         "CopperDefined" => ApertureFunction::SmdPad(SmdPadType::CopperDefined),
                         "SoldermaskDefined" => ApertureFunction::SmdPad(SmdPadType::SoldermaskDefined),
-                        _ => panic!("Unsupported SmdPad type in TA statement")
+                        _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
                     },
                     "BgaPad" => match attr_args[2] {
                         "CopperDefined" => ApertureFunction::BgaPad(SmdPadType::CopperDefined),
                         "SoldermaskDefined" => ApertureFunction::BgaPad(SmdPadType::SoldermaskDefined),
-                        _ => panic!("Unsupported SmdPad type in TA statement")
+                        _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
                     },
                     "HeatsinkPad" => ApertureFunction::HeatsinkPad,
                     "TestPad" => ApertureFunction::TestPad,
@@ -548,7 +555,7 @@ fn parse_aperture_attribute(line: Chars, gerber_doc: &mut GerberDoc) -> Result<C
                     "FiducialPad" => match attr_args[2]{
                         "Global" => ApertureFunction::FiducialPad(FiducialScope::Global),
                         "Local" => ApertureFunction::FiducialPad(FiducialScope::Local),
-                        _ => panic!("Unsupported FiducialPad type in TA statement"),
+                        _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
                     },
                     "ThermalReliefPad" => ApertureFunction::ThermalReliefPad,
                     "WasherPad" => ApertureFunction::WasherPad,
@@ -563,39 +570,29 @@ fn parse_aperture_attribute(line: Chars, gerber_doc: &mut GerberDoc) -> Result<C
                     "NonMaterial" => ApertureFunction::NonMaterial,
                     "Material" => ApertureFunction::Material,
                     "Other" => ApertureFunction::Other(attr_args[2].to_string()),
-                    _ => panic!("The  Aperture Function '{}' is currently not supported (/known)", attr_args[1])
-                };
-                gerber_doc.commands.push(
-                    ExtendedCode::ApertureAttribute(ApertureAttribute::ApertureFunction(aperture_func)).into()
-                )
+                    _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+                })).into())
             },
             "DrillTolerance" => {
-                gerber_doc.commands.push(
-                    ExtendedCode::ApertureAttribute(ApertureAttribute::DrillTolerance{
-                         plus: attr_args[1].parse::<f64>().unwrap(),
-                         minus: attr_args[2].parse::<f64>().unwrap()
-                         }).into()
-                )
+                Ok(ExtendedCode::ApertureAttribute(ApertureAttribute::DrillTolerance{
+                     plus: attr_args[1].parse::<f64>().unwrap(),
+                     minus: attr_args[2].parse::<f64>().unwrap()
+                     }).into())
             }
-            _ => panic!("The AttributeName '{}' is currently not supported for Aperture Attributes", attr_args[0])
-        }        
+            _ => Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+        }
     }
-    else { panic!("Unable to parse aperture attribute (TA)" )} 
-    
-    dog
+    else { Err(GerberParserError::InvalidApertureAttribute(raw_line)) }
 }
 
 
-fn parse_delete_attribute(line: Chars, gerber_doc: &mut GerberDoc) {
+fn parse_delete_attribute(line: Chars) -> Result<Command, GerberParserError>{
+    let raw_line = line.as_str().to_string();
     let attr_args = get_attr_args(line)?;
-    if attr_args.len() == 1 {   
-        gerber_doc.commands.push(
-            ExtendedCode::DeleteAttribute(attr_args[0].to_string()).into()
-        )        
-    } else if attr_args.len() > 1 {
-        panic!("Unable to parse delete attribute (TD) - TD should not have any fields, got field '{}'", attr_args[0]);
+    if attr_args.len() == 1 {
+        Ok(ExtendedCode::DeleteAttribute(attr_args[0].to_string()).into())
     } else {
-        panic!("Unable to parse delete attribute (TD)");
+        Err(GerberParserError::InvalidDeleteAttribute(raw_line))
     }
 }
 
@@ -606,10 +603,10 @@ fn parse_delete_attribute(line: Chars, gerber_doc: &mut GerberDoc) {
 /// `attribute_chars` argument must be the **trimmed line** from the gerber file
 /// with the **first three characters removed**. E.g. ".Part,single*%" not "%TF.Part,single*%"
 /// ```
-/// # use gerber_parser::parser::get_attr_args;
+/// use gerber_parser::parser::get_attr_args;
 /// let attribute_chars = ".DrillTolerance, 0.02, 0.01 *%".chars();
 /// 
-/// let arguments = get_attr_args(attribute_chars);
+/// let arguments = get_attr_args(attribute_chars).unwrap();
 /// assert_eq!(arguments, vec!["DrillTolerance","0.02","0.01"])
 /// ```
 pub fn get_attr_args(mut attribute_chars: Chars) -> Result<Vec<&str>, GerberParserError> {

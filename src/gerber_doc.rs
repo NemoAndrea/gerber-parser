@@ -37,25 +37,54 @@ impl GerberDoc {
     /// in the gerber-types rust crate. Note that aperture definitions will be sorted by code number
     /// with lower codes being at the top of the command. This is independent of their order during
     /// parsing.
-    pub fn to_commands(mut self) -> Vec<Result<Command, GerberParserError>> {
-        let mut gerber_cmds: Vec<Result<Command, GerberParserError>> = Vec::new();
-        gerber_cmds.push(Ok(ExtendedCode::CoordinateFormat(self.format_specification.unwrap()).into()));
-        gerber_cmds.push(Ok(ExtendedCode::Unit(self.units.unwrap()).into()));
-
+    pub fn to_commands(self) -> Vec<Command> {
+        let mut gerber_cmds: Vec<Command> = Vec::new();
+        match self.format_specification{
+            None => {}
+            Some(format_spec) => {
+                gerber_cmds.push(ExtendedCode::CoordinateFormat(format_spec).into());
+            }
+        }
+        match self.units{
+            None => {}
+            Some(units) => {
+                gerber_cmds.push(ExtendedCode::Unit(units).into());
+            }
+        }
+        
         // we add the apertures to the list, but we sort by code. This means the order of the output
         // is reproducible every time. 
         let mut apertures = self.apertures.into_iter().collect::<Vec<_>>();
         apertures.sort_by_key(|tup| tup.0);
         for (code, aperture) in apertures {
-            gerber_cmds.push(Ok(ExtendedCode::ApertureDefinition(ApertureDefinition {
+            gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
                 code,
                 aperture,
-            }).into()));
+            }).into());
         }
-
-        gerber_cmds.append(&mut self.commands);
+        gerber_cmds.extend(self.commands.into_iter().filter_map(|command|{
+            match command{
+                Ok(real_com) => {
+                    Some(real_com)
+                }
+                Err(_) => {
+                    None
+                }
+            }
+        }));
+        
         // TODO implement for units        
         return gerber_cmds
+    }
+    
+    pub fn get_errors(&self) -> Vec<&GerberParserError> {
+        let mut error_vec: Vec<&GerberParserError> = Vec::new();
+        for command in &self.commands {
+            if let Err(error) = command {
+                error_vec.push(error);
+            }
+        }
+        error_vec
     }
 }
 

@@ -50,6 +50,20 @@ pub enum GerberParserError {
     UnsupportedPolarityType(String),
     #[error("The AttributeName '{0}' is currently not supported for File Attributes")]
     UnsupportedFileAttribute(String),
-    #[error("The Attribute '{0}' cannot be parsed")]
+    #[error("The File attribute '{0}' cannot be parsed")]
     InvalidFileAttribute(String),
+    #[error("The Aperture attribute '{0}' cannot be parsed or is mis-formed")]
+    InvalidApertureAttribute(String),
+    #[error("The Aperture attribute '{0}' is not supported, but presumably valid")]
+    UnsupportedApertureAttribute(String),
+    #[error("Failed to parse delete attribute '{0}'")]
+    InvalidDeleteAttribute(String),
+}
+
+
+impl PartialEq for GerberParserError {
+    /// Hack to simplify testing. Always returns false.
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
 }

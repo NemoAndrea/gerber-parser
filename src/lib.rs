@@ -14,4 +14,4 @@
 
 pub mod parser;
 pub mod gerber_doc;
-mod error;
+pub mod error;
