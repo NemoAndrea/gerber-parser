@@ -249,8 +249,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
             }           
         }
     }
-
-    // TODO: check that we ended with a gerber EOF command
+    
     match gerber_doc.commands.last(){
         None => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile))}
         Some(command) => {
@@ -480,7 +479,6 @@ fn parse_aperture_selection(
 }
 
 
-// TODO clean up the except statements a bit
 // parse a Gerber interpolation command (e.g. 'X2000Y40000I300J50000D01*')
 fn parse_interpolation(
     line: &str, 
