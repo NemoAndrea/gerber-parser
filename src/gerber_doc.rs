@@ -37,6 +37,8 @@ impl GerberDoc {
     /// in the gerber-types rust crate. Note that aperture definitions will be sorted by code number
     /// with lower codes being at the top of the command. This is independent of their order during
     /// parsing.
+    /// 
+    /// This will ignore any errors encountered during parsing, to access those use `get_errors`
     pub fn to_commands(self) -> Vec<Command> {
         let mut gerber_cmds: Vec<Command> = Vec::new();
         match self.format_specification{
@@ -90,11 +92,17 @@ impl GerberDoc {
 
 impl fmt::Display for GerberDoc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let int_str: String = repeat("_").take(self.format_specification.unwrap().integer as usize).collect();
-        let dec_str: String = repeat("_").take(self.format_specification.unwrap().decimal as usize).collect();
+        let int_str: String = repeat("_")
+            .take(self.format_specification.unwrap().integer as usize).collect();
+        let dec_str: String = repeat("_")
+            .take(self.format_specification.unwrap().decimal as usize).collect();
         writeln!(f, "GerberDoc")?;
         writeln!(f, "- units: {:?}", self.units)?;
-        writeln!(f, "- format spec: {}.{} ({}|{})", int_str, dec_str, self.format_specification.unwrap().integer, self.format_specification.unwrap().decimal)?;
+        writeln!(f, "- format spec: {}.{} ({}|{})", 
+                 int_str, 
+                 dec_str, 
+                 self.format_specification.unwrap().integer, 
+                 self.format_specification.unwrap().decimal)?;
         writeln!(f, "- apertures: ")?;
         for (code, _) in &self.apertures {
             writeln!(f, "\t {}", code)?;
