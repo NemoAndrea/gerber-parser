@@ -74,17 +74,24 @@ impl GerberDoc {
 
 impl fmt::Display for GerberDoc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let int_str: String = repeat("_")
-            .take(self.format_specification.unwrap().integer as usize).collect();
-        let dec_str: String = repeat("_")
-            .take(self.format_specification.unwrap().decimal as usize).collect();
         writeln!(f, "GerberDoc")?;
         writeln!(f, "- units: {:?}", self.units)?;
-        writeln!(f, "- format spec: {}.{} ({}|{})", 
-                 int_str, 
-                 dec_str, 
-                 self.format_specification.unwrap().integer, 
-                 self.format_specification.unwrap().decimal)?;
+        match self.format_specification{
+            None => {
+                writeln!(f, "- no format spec!")?;
+            }
+            Some(format_spec) => {
+                let int_str: String = repeat("_").take(format_spec.integer as usize).collect();
+                let dec_str: String = repeat("_").take(format_spec.decimal as usize).collect();
+                writeln!(f, "- format spec: {}.{} ({}|{})",
+                         int_str,
+                         dec_str,
+                         format_spec.integer,
+                         format_spec.decimal
+                )?;
+            }
+        }
+        
         writeln!(f, "- apertures: ")?;
         for (code, _) in &self.apertures {
             writeln!(f, "\t {}", code)?;

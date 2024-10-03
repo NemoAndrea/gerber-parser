@@ -99,6 +99,11 @@ pub enum GerberParserError {
     InvalidDeleteAttribute{
         delete_attribute: String,
     },
+    #[error("tried to parse a number in the drill tolerance aperture attribute, \
+    but found {number_str} which could not be parsed as an f64.")]
+    DrillToleranceParseNumError{
+        number_str: String,
+    }
 }
 
 

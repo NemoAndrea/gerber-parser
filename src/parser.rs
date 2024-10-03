@@ -48,11 +48,7 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
         let line = raw_line.trim();
 
         // Show the line 
-        //println!("{}. {}", index + 1, &line);
-        
-        //  gerber_doc.commands.push(parse_line(line, &mut gerber_doc, &mut last_coords).map_err(|error_without_context|{
-        //      error_without_context.to_with_context(Some(line.to_string()), Some(line_number))
-        //  }));
+        //log::debug!("{}. {}", index + 1, &line);
         
         if !line.is_empty() {
             let line_result = match parse_line(line, &mut gerber_doc, &mut last_coords) {
@@ -90,7 +86,7 @@ fn parse_line(line: &str,
 ) -> Result<Command, GerberParserError> {
     let mut linechars = line.chars();
 
-    match linechars.next().unwrap() {
+    match linechars.next().unwrap() { // Safety: already explicitly checked that the line is not empty
         'G' => {
             match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
                 '0' =>  match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
@@ -351,7 +347,7 @@ fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Apert
                 return Err(GerberParserError::ApertureDefinedTwice{aperture_code: code});
             }
 
-            //println!("The code is {}, and the aperture type is {} with params {:?}", code, aperture_type, aperture_args);
+            //log::debug!("The code is {}, and the aperture type is {} with params {:?}", code, aperture_type, aperture_args);
             match aperture_type {
                 "C" => Ok((code, Aperture::Circle(Circle {
                     diameter: aperture_args[0].trim().parse::<f64>()
@@ -572,21 +568,6 @@ fn parse_move_or_flash(
     }   
 }
 
-
-// fn parse_load_mirroring(mut linechars: Chars, gerber_doc: &mut GerberDoc) {
-    // match linechars.next().unwrap() {
-    //     'N' => gerber_doc.commands.push(value), //LMN
-    //     'Y' => gerber_doc.commands.push(value), // LMY
-    //     'X' => match linechars.next() { 
-    //         Some('Y') => {} //LMXY
-    //         None => {} // LMX
-    //         _ => panic!("Invalid load mirroring (LM) command: {}", linechars.as_str())
-    //     }
-    //     _ => panic!("Invalid load mirroring (LM) command: {}", linechars.as_str())
-    // }
-    // panic!("Load Mirroring (LM) command not supported yet.")
-// }
-
 // a step and repeat open statement has four (required) parameters that we need to extract
 // X (pos int) Y (pos int), I (decimal), J (decimal)
 fn parse_step_repeat_open(line: &str) -> Result<Command, GerberParserError> {
@@ -627,7 +608,7 @@ fn parse_file_attribute(line: Chars) -> Result<FileAttribute, GerberParserError>
     
     let attr_args = get_attr_args(line)?;
     if attr_args.len() >= 2 {  // we must have at least 1 field
-        //println!("TF args are: {:?}", attr_args);
+        //log::debug!("TF args are: {:?}", attr_args);
         match attr_args[0] {
             "Part" => match attr_args[1]{
                 "Single" => Ok(FileAttribute::Part(Part::Single)),
@@ -671,7 +652,7 @@ fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
     
     let raw_line = line.as_str().to_string();
     let attr_args = get_attr_args(line)?;
-    println!("TA ARGS: {:?}", attr_args);
+    // log::debug!("TA ARGS: {:?}", attr_args);
     if attr_args.len() >= 2 {  // we must have at least 1 field
         match attr_args[0] {
             "AperFunction" => {
@@ -722,8 +703,16 @@ fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
             },
             "DrillTolerance" => {
                 Ok(ExtendedCode::ApertureAttribute(ApertureAttribute::DrillTolerance{
-                     plus: attr_args[1].parse::<f64>().unwrap(),
-                     minus: attr_args[2].parse::<f64>().unwrap()
+                     plus: attr_args[1].parse::<f64>().map_err(|_|{
+                         GerberParserError::DrillToleranceParseNumError {
+                             number_str: attr_args[1].to_string(),
+                         }
+                     })?,
+                     minus: attr_args[2].parse::<f64>().map_err(|_|{
+                         GerberParserError::DrillToleranceParseNumError {
+                             number_str: attr_args[2].to_string(),
+                         }
+                     })?
                      }).into())
             }
             _ => Err(UnsupportedApertureAttribute{aperture_attribute: raw_line})
