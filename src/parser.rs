@@ -10,6 +10,7 @@ use std::str::Chars;
 use crate::error::GerberParserError;
 use crate::gerber_doc::{ GerberDoc};
 use lazy_regex::*;
+use log::{debug, warn};
 
 // naively define some regex terms
 // TODO see which ones can be done without regex for better performance?
@@ -40,226 +41,195 @@ pub fn parse_gerber<T: Read>(reader: BufReader<T>) -> GerberDoc {
     let mut last_coords = (0i64,0i64);
     
 
-    for (index, line) in reader.lines().enumerate() {
-        let raw_line = line.expect("IO Error reading line"); 
+    for (line_num_indexed_from_0, line) in reader.lines().enumerate() {
+        let line_number = line_num_indexed_from_0 + 1;
+        let raw_line = line.expect(&format!("IO Error reading line {}", line_num_indexed_from_0)); 
         // TODO combine this with line above
         let line = raw_line.trim();
 
         // Show the line 
         //println!("{}. {}", index + 1, &line);
+        
+        //  gerber_doc.commands.push(parse_line(line, &mut gerber_doc, &mut last_coords).map_err(|error_without_context|{
+        //      error_without_context.to_with_context(Some(line.to_string()), Some(line_number))
+        //  }));
+        
         if !line.is_empty() {
-            let mut linechars = line.chars();
-
-            match linechars.next().unwrap() {
-                'G' => {
-                    match linechars.next().unwrap() {
-                        '0' =>  match linechars.next().unwrap() {
-                            '1' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(
-                                    GCode::InterpolationMode(InterpolationMode::Linear)
-                                ).into())
-                            ), // G01
-                            '2' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(
-                                    GCode::InterpolationMode(InterpolationMode::ClockwiseCircular)
-                                ).into())
-                            ), // G02
-                            '3' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(
-                                    GCode::InterpolationMode(InterpolationMode::CounterclockwiseCircular)
-                                ).into())
-                            ), // G03
-                            '4' => {gerber_doc.commands.push(parse_comment(line)) }, // G04
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            ),
-                        },
-                        '3'=> match linechars.next().unwrap() {
-                            '6' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(GCode::RegionMode(true)).into())
-                            ), // G36
-                            '7' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(GCode::RegionMode(false)).into())
-                            ), // G37
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            ),
-                        },
-                        '7' => match linechars.next().unwrap() {
-                            // the G74 command is technically part of the Deprecated commands
-                            '4' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(
-                                    GCode::QuadrantMode(QuadrantMode::Single)
-                                ).into())
-                            ), // G74
-                            '5' => gerber_doc.commands.push(
-                                Ok(FunctionCode::GCode(
-                                    GCode::QuadrantMode(QuadrantMode::Multi)
-                                ).into())
-                            ), // G74
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            ),
-                        }, // G75
-                        _ => gerber_doc.commands.push(
-                            Err(GerberParserError::UnknownCommand(line.to_string()))
-                        ),
-                    }
-                },
-                '%' => {
-                    match linechars.next().unwrap() {
-                        'M' => { 
-                            match parse_units(line, &gerber_doc){
-                                Ok(units) => {
-                                    gerber_doc.units = Some(units);
-                                }
-                                Err(e) => {
-                                    gerber_doc.commands.push(Err(e));
-                                }
-                            }
-                        },
-                        'F' => { 
-                            match parse_format_spec(line, &gerber_doc){
-                                Ok(format_spec) => {
-                                    gerber_doc.format_specification = Some(format_spec);
-                                }
-                                Err(e) => {
-                                    gerber_doc.commands.push(Err(e));
-                                }
-                            } 
-                        },
-                        'A' => match linechars.next().unwrap() {
-                            'D' => { 
-                                match parse_aperture_defs(line, &gerber_doc){
-                                    Ok((code, ap)) => {
-                                        gerber_doc.apertures.insert(code, ap); 
-                                        // Safety: While insert can 'fail' (misbehave) if the key 
-                                        // already exists, 
-                                        // `parse_aperture_defs` explicitly checks for this
-                                    }
-                                    Err(err) => {
-                                        gerber_doc.commands.push(Err(err));
-                                    }
-                                } 
-                            }, // AD
-                            'M' => {gerber_doc.commands.push(
-                                Err(GerberParserError::UnsupportedCommand(line.to_string()))
-                            )}, // AM
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            )
-                        }, 
-                        'L' => match linechars.next().unwrap() {
-                            'P' => match linechars.next().unwrap() {
-                                'D' => gerber_doc.commands.push(
-                                    Ok(ExtendedCode::LoadPolarity(Polarity::Dark).into())
-                                ), // LPD
-                                'C' => gerber_doc.commands.push(
-                                    Ok(ExtendedCode::LoadPolarity(Polarity::Clear).into())
-                                ), // LPC
-                                _ => gerber_doc.commands.push(
-                                    Err(GerberParserError::UnknownCommand(line.to_string()))
-                                )
-                            }, // LP
-                            'M' => { gerber_doc.commands.push(
-                                Err(GerberParserError::UnsupportedCommand(line.to_string()))
-                            ) }, // LM 
-                            'R' => { gerber_doc.commands.push(
-                                Err(GerberParserError::UnsupportedCommand(line.to_string()))
-                            ) }, // LR
-                            'S' => { gerber_doc.commands.push(
-                                Err(GerberParserError::UnsupportedCommand(line.to_string()))
-                            ) }, // LS
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            )
-                        },
-                        'T' => match linechars.next().unwrap() {
-                            'F' => {
-                                gerber_doc.commands.push(
-                                    parse_file_attribute(linechars).map(|file_attr| {
-                                        ExtendedCode::FileAttribute(file_attr).into()
-                                    })
-                                );
-                            },
-                            'A' => { gerber_doc.commands.push(parse_aperture_attribute(linechars)) },
-                            'D' => { gerber_doc.commands.push(parse_delete_attribute(linechars)) },
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            )
-                        },
-                        'S' => match linechars.next().unwrap() { 
-                            'R' => match linechars.next().unwrap() {
-                                'X' => gerber_doc.commands.push(parse_step_repeat_open(line)),
-                                // a statement %SR*% closes a step repeat command, which has no parameters
-                                '*' => gerber_doc.commands.push(
-                                    Ok(ExtendedCode::StepAndRepeat(StepAndRepeat::Close).into())
-                                ),
-                                _ => gerber_doc.commands.push(
-                                    Err(GerberParserError::UnknownCommand(line.to_string()))
-                                )
-                            },
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            )                          
-                        },
-                        'I' => match linechars.next().unwrap() {
-                            'N' => { // Image Name, 8.1.3. Deprecated, but still used by fusion 360.
-                                match parse_image_name(line, &gerber_doc) {
-                                    Ok(name) => {
-                                        gerber_doc.image_name = Some(name);
-                                    }
-                                    Err(e) => {
-                                        gerber_doc.commands.push(Err(e))
-                                    }
-                                }
-                            }, 
-                            'P' => { gerber_doc.commands.push(
-                                Err(GerberParserError::UnsupportedCommand(line.to_string()))
-                            ) }, // Image Polarity, basically useless, but used by fusion
-                            _ => gerber_doc.commands.push(
-                                Err(GerberParserError::UnknownCommand(line.to_string()))
-                            )
-                        }
-                        _ => gerber_doc.commands.push(
-                            Err(GerberParserError::UnknownCommand(line.to_string()))
-                        )
-                    }
-                },
-                'X' | 'Y' => {linechars.next_back(); match linechars.next_back().unwrap() { 
-                    '1' => gerber_doc.commands.push(
-                        parse_interpolation(line, &gerber_doc, &mut last_coords)
-                    ), // D01
-                    '2' => gerber_doc.commands.push(
-                        parse_move_or_flash(line, &gerber_doc, &mut last_coords, false)
-                    ), // D02
-                    '3' => gerber_doc.commands.push(
-                        parse_move_or_flash(line, &gerber_doc, &mut last_coords, true)
-                    ), // D03
-                    _ => gerber_doc.commands.push(
-                        Err(GerberParserError::UnknownCommand(line.to_string()))
-                    )
-                }},
-                'D' => { // select aperture D<num>*                   
-                    linechars.next_back(); // remove the trailing '*'
-                    gerber_doc.commands.push(parse_aperture_selection(linechars, &gerber_doc))
-                },                
-                'M' => { gerber_doc.commands.push(Ok(FunctionCode::MCode(MCode::EndOfFile).into())) }                
-                _ => gerber_doc.commands.push(Err(GerberParserError::UnknownCommand(line.to_string())))
-            }           
+            let line_result = match parse_line(line, &mut gerber_doc, &mut last_coords) {
+                Ok(command) => {
+                    log::debug!("Found command: {:?}", command);
+                    Ok(command)
+                }
+                Err(error_without_context) => {
+                    let contexted_error = error_without_context
+                        .to_with_context(Some(line.to_string()), Some(line_number));
+                    log::warn!("{}", contexted_error);
+                    Err(contexted_error)
+                }
+            };
+            gerber_doc.commands.push(line_result);
         }
     }
     
     match gerber_doc.commands.last(){
-        None => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile))}
+        None => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile.to_with_context(None, None)))}
         Some(command) => {
             match command{
                 Ok(Command::FunctionCode(FunctionCode::MCode(MCode::EndOfFile))) => {}
-                _ => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile))}
+                _ => {gerber_doc.commands.push(Err(GerberParserError::NoEndOfFile.to_with_context(None, None)))}
             }
         }
     }
     return gerber_doc
+}
+
+
+fn parse_line(line: &str, 
+              gerber_doc: &mut GerberDoc, 
+              last_coords: &mut (i64,i64)
+) -> Result<Command, GerberParserError> {
+    let mut linechars = line.chars();
+
+    match linechars.next().unwrap() {
+        'G' => {
+            match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                '0' =>  match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    '1' => {// G01
+                        Ok(FunctionCode::GCode(
+                            GCode::InterpolationMode(InterpolationMode::Linear)
+                        ).into())
+                    },
+                    '2' => {// G02
+                        Ok(FunctionCode::GCode(
+                            GCode::InterpolationMode(InterpolationMode::ClockwiseCircular)
+                        ).into())
+                    },
+                    '3' => {// G03 
+                        Ok(FunctionCode::GCode(
+                            GCode::InterpolationMode(InterpolationMode::CounterclockwiseCircular)
+                        ).into())
+                    },
+                    '4' => {// G04
+                        parse_comment(line)
+                    },
+                    _ => Err(GerberParserError::UnknownCommand {}),
+                },
+                '3'=> match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    '6' => Ok(FunctionCode::GCode(GCode::RegionMode(true)).into()), // G36
+                    '7' => Ok(FunctionCode::GCode(GCode::RegionMode(false)).into()), // G37
+                    _ => Err(GerberParserError::UnknownCommand {}),
+                },
+                '7' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    // the G74 command is technically part of the Deprecated commands
+                    '4' => Ok(FunctionCode::GCode(GCode::QuadrantMode(QuadrantMode::Single)).into()), // G74
+                    '5' => Ok(FunctionCode::GCode(GCode::QuadrantMode(QuadrantMode::Multi)).into()), // G75
+                    _ => Err(GerberParserError::UnknownCommand {}),
+                }, 
+                _ => Err(GerberParserError::UnknownCommand {}),
+            }
+        },
+        '%' => {
+            match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                'M' => {
+                    match parse_units(line, &gerber_doc){
+                        Ok(units) => {
+                            gerber_doc.units = Some(units);
+                            Ok(Command::ExtendedCode(ExtendedCode::Unit(units)))
+                        }
+                        Err(e) => Err(e)
+                    }
+                },
+                'F' => {
+                    match parse_format_spec(line, &gerber_doc){
+                        Ok(format_spec) => {
+                            gerber_doc.format_specification = Some(format_spec);
+                            Ok(ExtendedCode::CoordinateFormat(format_spec).into())
+                        }
+                        Err(e) => Err(e)
+                    }
+                },
+                'A' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    'D' => {// AD
+                        match parse_aperture_defs(line, &gerber_doc){
+                            Ok((code, ap)) => {
+                                gerber_doc.apertures.insert(code, ap.clone());
+                                // Safety: While insert can 'fail' (misbehave) if the key 
+                                // already exists, 
+                                // `parse_aperture_defs` explicitly checks for this
+                                Ok(ExtendedCode::ApertureDefinition(
+                                    gerber_types::ApertureDefinition::new(code, ap)
+                                ).into())
+                            }
+                            Err(err) => Err(err)
+                        }
+                    }, 
+                    'M' => Err(GerberParserError::UnsupportedCommand {}), // AM
+                    _ => Err(GerberParserError::UnknownCommand {})
+                },
+                'L' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    'P' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {// LP
+                        'D' => Ok(ExtendedCode::LoadPolarity(Polarity::Dark).into()), // LPD
+                        'C' => Ok(ExtendedCode::LoadPolarity(Polarity::Clear).into()), // LPC
+                        _ => Err(GerberParserError::UnknownCommand {})
+                    }, 
+                    'M' => Err(GerberParserError::UnsupportedCommand {}), // LM 
+                    'R' => Err(GerberParserError::UnsupportedCommand {}), // LR
+                    'S' => Err(GerberParserError::UnsupportedCommand {}), // LS
+                    _ => Err(GerberParserError::UnknownCommand {})
+                },
+                'T' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    'F' => parse_file_attribute(linechars).map(|file_attr| {
+                                ExtendedCode::FileAttribute(file_attr).into()
+                            }),
+                    'A' => parse_aperture_attribute(linechars),
+                    'D' => parse_delete_attribute(linechars),
+                    _ => Err(GerberParserError::UnknownCommand {})
+                },
+                'S' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    'R' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                        'X' => parse_step_repeat_open(line),
+                        // a statement %SR*% closes a step repeat command, which has no parameters
+                        '*' => Ok(ExtendedCode::StepAndRepeat(StepAndRepeat::Close).into()),
+                        _ => Err(GerberParserError::UnknownCommand {})
+                    },
+                    _ => Err(GerberParserError::UnknownCommand {})
+                },
+                'I' => match linechars.next().ok_or(GerberParserError::UnknownCommand{})? {
+                    'N' => { // Image Name, 8.1.3. Deprecated, but still used by fusion 360.
+                        match parse_image_name(line, &gerber_doc) {
+                            Ok(name) => {
+                                gerber_doc.image_name = Some(name.clone());
+                                // Because `gerber-types` does not support image name, 
+                                // we save it in the doc and list it as a comment. 
+                                // The gerber spec also says it can be treated as a comment.
+                                Ok(FunctionCode::GCode(GCode::Comment(format!("Image Name: {name}"))).into())
+                            }
+                            Err(e) => Err(e) 
+                        }
+                    },
+                    'P' => Err(GerberParserError::UnsupportedCommand {}), 
+                    // Image Polarity, basically useless, but used by fusion
+                    _ => Err(GerberParserError::UnknownCommand {})
+                }
+                _ => Err(GerberParserError::UnknownCommand {})
+            }
+        },
+        'X' | 'Y' => {
+            linechars.next_back(); 
+            match linechars.next_back().ok_or(GerberParserError::UnknownCommand{})? {
+                '1' => parse_interpolation(line, &gerber_doc, last_coords), // D01
+                '2' => parse_move_or_flash(line, &gerber_doc, last_coords, false), // D02
+                '3' => parse_move_or_flash(line, &gerber_doc, last_coords, true), // D03
+                _ => Err(GerberParserError::UnknownCommand{})
+            }
+        },
+        'D' => { // select aperture D<num>*                   
+            linechars.next_back(); // remove the trailing '*'
+            parse_aperture_selection(linechars, &gerber_doc)
+        },
+        'M' => Ok(FunctionCode::MCode(MCode::EndOfFile).into()),
+        _ => Err(GerberParserError::UnknownCommand {})
+    }
 }
 
 
@@ -268,11 +238,15 @@ fn parse_comment(line: &str) -> Result<Command, GerberParserError> {
     match RE_COMMENT.captures(line) {
         Some(regmatch) => {
             let comment = regmatch.get(1)
-                .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_COMMENT.clone()))?
+                .ok_or(GerberParserError::MissingRegexCapture{
+                    regex: RE_COMMENT.clone(),
+                })?
                 .as_str();
             Ok(FunctionCode::GCode(GCode::Comment(comment.to_string())).into())
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_COMMENT.clone())) }
+        None => { Err(GerberParserError::NoRegexMatch{
+            regex: RE_COMMENT.clone(),
+        }) }
     }
     
 }
@@ -280,16 +254,18 @@ fn parse_comment(line: &str) -> Result<Command, GerberParserError> {
 /// parse an image name. This is optional and deprecated, but included in all exports from Fusion 360
 fn parse_image_name(line: &str, gerber_doc: &GerberDoc) -> Result<String, GerberParserError> {
     if gerber_doc.image_name.is_some(){
-        Err(GerberParserError::TriedToSetImageNameTwice(line.to_string()))
+        Err(GerberParserError::TriedToSetImageNameTwice{})
     } else {
         match RE_IMAGE_NAME.captures(line) {
             Some(regmatch) => {
                 let image_name = regmatch.get(1)
-                    .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_IMAGE_NAME.clone()))?
+                    .ok_or(GerberParserError::MissingRegexCapture{regex: RE_IMAGE_NAME.clone()})?
                     .as_str();
                 Ok(String::from(image_name))
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_IMAGE_NAME.clone())) }
+            None => { 
+                Err(GerberParserError::NoRegexMatch {regex: RE_IMAGE_NAME.clone()})
+            }
         }
     }
 }
@@ -299,20 +275,20 @@ fn parse_image_name(line: &str, gerber_doc: &GerberDoc) -> Result<String, Gerber
 fn parse_units(line: &str, gerber_doc: &GerberDoc) -> Result<Unit, GerberParserError> {
     // Check that the units are not set yet (that would imply the set unit command is present twice)
     if gerber_doc.units.is_some() { 
-        Err(GerberParserError::TriedToSetUnitsTwice(line.to_string()))
+        Err(GerberParserError::TriedToSetUnitsTwice{})
     } else {
         match RE_UNITS.captures(line) {
             Some(regmatch) => {
                 let units_str = regmatch.get(1)
-                    .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_UNITS.clone()))?
+                    .ok_or(GerberParserError::MissingRegexCapture{regex: RE_UNITS.clone()})?
                     .as_str();
                 match units_str {
                     "MM" => Ok(Unit::Millimeters),
                     "IN" => Ok(Unit::Inches),
-                    _ => Err(GerberParserError::InvalidUnitFormat(line.to_string())),
+                    _ => Err(GerberParserError::InvalidUnitFormat{units_str: line.to_string()})
                 }
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_UNITS.clone())) }
+            None => Err(GerberParserError::NoRegexMatch{regex: RE_UNITS.clone()})
         }
     }
 }
@@ -322,33 +298,35 @@ fn parse_units(line: &str, gerber_doc: &GerberDoc) -> Result<Unit, GerberParserE
 fn parse_format_spec(line: &str, gerber_doc: &GerberDoc) -> Result<CoordinateFormat, GerberParserError> {
     // Ensure that FS was not set before, which would imply two FS statements in the same doc
     if gerber_doc.format_specification.is_some() { 
-        Err(GerberParserError::TriedToFormatTwice(line.to_string())) 
+        Err(GerberParserError::TriedToFormatTwice {}) 
     } else {
         match RE_FORMAT_SPEC.captures(line) {
             Some(regmatch) => {
                 let mut fs_chars = regmatch.get(1)
-                    .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_FORMAT_SPEC.clone()))?
+                    .ok_or(GerberParserError::MissingRegexCapture{regex: RE_FORMAT_SPEC.clone()})?
                     .as_str().chars();
                 let integer:u8 = parse_char(fs_chars.next()
-                    .ok_or(GerberParserError::ParseFormatErrorWrongNumDigits(line.to_string()))?)?;
+                    .ok_or(GerberParserError::ParseFormatErrorWrongNumDigits {})?)?;
                 let decimal:u8 = parse_char(fs_chars.next()
-                    .ok_or(GerberParserError::ParseFormatErrorWrongNumDigits(line.to_string()))?)?;
+                    .ok_or(GerberParserError::ParseFormatErrorWrongNumDigits{})?)?;
 
                 // the gerber spec states that the integer value can be at most 6
                 if integer < 1 || integer > 6 {
-                    return Err(GerberParserError::ParseFormatErrorInvalidDigit(integer))
+                    return Err(GerberParserError::ParseFormatErrorInvalidDigit{digit_found: integer})
                 }
 
                 Ok(CoordinateFormat::new(integer, decimal))
             }
-            None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_FORMAT_SPEC.clone())) }
+            None => Err(GerberParserError::NoRegexMatch{regex: RE_FORMAT_SPEC.clone()})
         }
     }
 }
 
 /// helper function to move some ugly repeated .ok_or().unwrap().Arc<Mutex<Future>>
 fn parse_char(char_in: char) -> Result<u8, GerberParserError> {
-    Ok(char_in.to_digit(10).ok_or(GerberParserError::ParseDigitError(char_in))? as u8)
+    Ok(char_in.to_digit(10)
+        .ok_or(GerberParserError::ParseDigitError {char_found: char_in})
+        ? as u8)
 }
 
 
@@ -358,19 +336,19 @@ fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Apert
     match RE_APERTURE.captures(line) {
         Some(regmatch) => {
             let code_str = regmatch.get(1)
-                .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_APERTURE.clone()))?
+                .ok_or(GerberParserError::MissingRegexCapture{regex: RE_APERTURE.clone()})?
                 .as_str();
             let code = parse_aperture_code(code_str)?;
 
             let aperture_type = regmatch.get(2)
-                .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_APERTURE.clone()))?
+                .ok_or(GerberParserError::MissingRegexCapture{regex: RE_APERTURE.clone()})?
                 .as_str();
             let aperture_args: Vec<&str> = regmatch.get(3)
-                .ok_or(GerberParserError::MissingRegexCapture(line.to_string(), RE_APERTURE.clone()))?
+                .ok_or(GerberParserError::MissingRegexCapture{regex: RE_APERTURE.clone()})?
                 .as_str().split("X").collect();
             
             if gerber_doc.apertures.contains_key(&code){
-                return Err(GerberParserError::ApertureDefinedTwice(code, line.to_string()));
+                return Err(GerberParserError::ApertureDefinedTwice{aperture_code: code});
             }
 
             //println!("The code is {}, and the aperture type is {} with params {:?}", code, aperture_type, aperture_args);
@@ -378,12 +356,12 @@ fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Apert
                 "C" => Ok((code, Aperture::Circle(Circle {
                     diameter: aperture_args[0].trim().parse::<f64>()
                         .map_err(|_| {
-                            GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                            GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                         })?,
                     hole_diameter: if aperture_args.len() > 1 {
                         Some(aperture_args[1].trim().parse::<f64>()
                             .map_err(|_| {
-                                GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                                GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                             })?
                         )
                     } else { None }
@@ -394,7 +372,7 @@ fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Apert
                     hole_diameter: if aperture_args.len() > 2 {
                         Some(aperture_args[2].trim().parse::<f64>()
                             .map_err(|_| {
-                                GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                                GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                             })?
                         )
                     } else { None }
@@ -405,7 +383,7 @@ fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Apert
                     hole_diameter: if aperture_args.len() > 2 {
                         Some(aperture_args[2].trim().parse::<f64>()
                             .map_err(|_| {
-                                GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                                GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                             })?)
                     } else { None }
                 }))),
@@ -413,37 +391,37 @@ fn parse_aperture_defs(line: &str, gerber_doc: &GerberDoc) -> Result<(i32, Apert
                 "P" => Ok((code, Aperture::Polygon(Polygon {
                     diameter: aperture_args[0].trim().parse::<f64>()
                         .map_err(|_| {
-                            GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                            GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                         })?,
                     vertices: aperture_args[1].trim().parse::<u8>()
                         .map_err(|_| {
-                            GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                            GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                         })?,
                     rotation: if aperture_args.len() > 2 {
                         Some(aperture_args[2].trim().parse::<f64>()
                             .map_err(|_| {
-                                GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                                GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                             })?)
                     } else { None },
                     hole_diameter: if aperture_args.len() > 3 {
                         Some(aperture_args[3].trim().parse::<f64>()
                             .map_err(|_| {
-                                GerberParserError::ParseApertureDefinitionBodyError(code, line.to_string())
+                                GerberParserError::ParseApertureDefinitionBodyError{aperture_code: code}
                             })?)
                     } else { None }
                 }))),
                 unknown_type => { 
-                    Err(GerberParserError::UnknownApertureType(unknown_type.to_string(), line.to_string()))
+                    Err(GerberParserError::UnknownApertureType{type_str: unknown_type.to_string()})
                 }
             }
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_APERTURE.clone())) }
+        None => Err(GerberParserError::NoRegexMatch{regex: RE_APERTURE.clone()})
     }
 }
 
 fn parse_coord<T: std::str::FromStr>(coord_str: &str) -> Result<T, GerberParserError> {
     coord_str.trim().parse::<T>()
-        .map_err(|_| {GerberParserError::FailedToParseCoordinate(coord_str.to_string())})
+        .map_err(|_| {GerberParserError::FailedToParseCoordinate{coord_num_str: coord_str.to_string()}})
 }
 
 
@@ -453,15 +431,15 @@ fn parse_aperture_code(code_str: &str) -> Result<i32, GerberParserError> {
             Ok(v)
         }
         Err(_) => {
-            Err(GerberParserError::ApertureCodeParseFailed(code_str.to_string()))
+            Err(GerberParserError::ApertureCodeParseFailed { aperture_code_str: code_str.to_string() })
         }
         Ok(v) => {
-            Err(GerberParserError::ApertureCodeParseFailed(code_str.to_string()))
+            Err(GerberParserError::ApertureCodeParseFailed{ aperture_code_str: code_str.to_string() })
         }
     }
 }
 fn parse_aperture_selection(
-    linechars: Chars, 
+    linechars: Chars,
     gerber_doc: &GerberDoc
 )
     -> Result<Command, GerberParserError>
@@ -473,7 +451,7 @@ fn parse_aperture_selection(
             Ok(FunctionCode::DCode(DCode::SelectAperture(aperture_code)).into())
         }
         false => {
-            Err(GerberParserError::ApertureNotDefined(aperture_code, aperture_str.to_string()))
+            Err(GerberParserError::ApertureNotDefined{aperture_code})
         }
     }
 }
@@ -481,7 +459,7 @@ fn parse_aperture_selection(
 
 // parse a Gerber interpolation command (e.g. 'X2000Y40000I300J50000D01*')
 fn parse_interpolation(
-    line: &str, 
+    line: &str,
     gerber_doc: &GerberDoc, 
     last_coords: &mut (i64, i64)
 )
@@ -519,7 +497,7 @@ fn parse_interpolation(
                             x_coord, 
                             y_coord, 
                             gerber_doc.format_specification.ok_or(
-                                GerberParserError::OperationBeforeFormat(line.to_string())
+                                GerberParserError::OperationBeforeFormat{}
                             )?
                         ), 
                         Some(coordinates_offset_from_gerber(
@@ -536,7 +514,7 @@ fn parse_interpolation(
                             x_coord, 
                             y_coord, 
                             gerber_doc.format_specification.ok_or(
-                                GerberParserError::OperationBeforeFormat(line.to_string())
+                                GerberParserError::OperationBeforeFormat{}
                             )?
                         ), 
                         None
@@ -544,14 +522,14 @@ fn parse_interpolation(
                 )).into())
             }
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_INTERPOLATION.clone())) }
+        None => Err(GerberParserError::NoRegexMatch{regex: RE_INTERPOLATION.clone()})
     }
 }
 
 
 // parse a Gerber move or flash command (e.g. 'X2000Y40000D02*')
 fn parse_move_or_flash(
-    line: &str, 
+    line: &str,
     gerber_doc: &GerberDoc, 
     last_coords: &mut (i64, i64), 
     flash: bool
@@ -578,10 +556,10 @@ fn parse_move_or_flash(
             };
             
             let coords = coordinates_from_gerber(
-                x_coord, 
-                y_coord, 
+                x_coord,
+                y_coord,
                 gerber_doc.format_specification
-                    .ok_or(GerberParserError::OperationBeforeFormat(line.to_string()))?,
+                    .ok_or(GerberParserError::OperationBeforeFormat {})?,
             );
     
             if flash {
@@ -590,7 +568,7 @@ fn parse_move_or_flash(
                 Ok(FunctionCode::DCode(DCode::Operation(Operation::Move(coords))).into())
             }
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_MOVE_OR_FLASH.clone())) }
+        None => Err(GerberParserError::NoRegexMatch{regex: RE_MOVE_OR_FLASH.clone()})
     }   
 }
 
@@ -615,25 +593,21 @@ fn parse_step_repeat_open(line: &str) -> Result<Command, GerberParserError> {
     match RE_STEP_REPEAT.captures(line) {
         Some(regmatch) => {
             Ok(ExtendedCode::StepAndRepeat(StepAndRepeat::Open{
-                repeat_x: parse_coord::<u32>(regmatch.get(1)
-                    .ok_or(GerberParserError::MissingRegexCapture(
-                        line.to_string(), RE_STEP_REPEAT.clone()
-                    ))?.as_str())?,
-                repeat_y: parse_coord::<u32>(regmatch.get(2)
-                    .ok_or(GerberParserError::MissingRegexCapture(
-                        line.to_string(), RE_STEP_REPEAT.clone()
-                    ))?.as_str())?,
-                distance_x: parse_coord::<f64>(regmatch.get(3)
-                    .ok_or(GerberParserError::MissingRegexCapture(
-                        line.to_string(), RE_STEP_REPEAT.clone()
-                    ))?.as_str())?,
-                distance_y: parse_coord::<f64>(regmatch.get(4)
-                    .ok_or(GerberParserError::MissingRegexCapture(
-                        line.to_string(), RE_STEP_REPEAT.clone()
-                    ))?.as_str())?,
+                repeat_x: parse_coord::<u32>(regmatch.get(1).ok_or(
+                    GerberParserError::MissingRegexCapture{regex: RE_STEP_REPEAT.clone()}
+                )?.as_str())?,
+                repeat_y: parse_coord::<u32>(regmatch.get(2).ok_or(
+                    GerberParserError::MissingRegexCapture{regex: RE_STEP_REPEAT.clone()}
+                )?.as_str())?,
+                distance_x: parse_coord::<f64>(regmatch.get(3).ok_or(
+                    GerberParserError::MissingRegexCapture{regex: RE_STEP_REPEAT.clone()}
+                )?.as_str())?,
+                distance_y: parse_coord::<f64>(regmatch.get(4).ok_or(
+                    GerberParserError::MissingRegexCapture{regex: RE_STEP_REPEAT.clone()}
+                )?.as_str())?,
             }).into())
         }
-        None => { Err(GerberParserError::NoRegexMatch(line.to_string(), RE_STEP_REPEAT.clone())) }
+        None => Err(GerberParserError::NoRegexMatch{regex: RE_STEP_REPEAT.clone()})
     }
 }
 
@@ -661,7 +635,7 @@ fn parse_file_attribute(line: Chars) -> Result<FileAttribute, GerberParserError>
                 "FabricationPanel" => Ok(FileAttribute::Part(Part::FabricationPanel)),
                 "Coupon" => Ok(FileAttribute::Part(Part::Coupon)),
                 "Other" => Ok(FileAttribute::Part(Part::Other(attr_args[2].to_string()))),
-                _ => Err(GerberParserError::UnsupportedPartType(attr_args[1].to_string()))
+                _ => Err(GerberParserError::UnsupportedPartType{part_type: attr_args[1].to_string()})
             },
             // TODO do FileFunction properly, but needs changes in gerber-types
             "FileFunction" => Ok(FileAttribute::FileFunction(FileFunction::Other(
@@ -670,14 +644,14 @@ fn parse_file_attribute(line: Chars) -> Result<FileAttribute, GerberParserError>
             "FilePolarity" => match attr_args[1]{
                 "Positive" => Ok(FileAttribute::FilePolarity(FilePolarity::Positive)),
                 "Negative" => Ok(FileAttribute::FilePolarity(FilePolarity::Negative)),
-                _ => Err(GerberParserError::UnsupportedPolarityType(attr_args[1].to_string()))
+                _ => Err(GerberParserError::UnsupportedPolarityType{polarity_type: attr_args[1].to_string()})
             },
             "Md5" => Ok(FileAttribute::Md5(attr_args[1].to_string())),
-            _ => Err(GerberParserError::UnsupportedFileAttribute(attr_args[0].to_string()))
+            _ => Err(GerberParserError::UnsupportedFileAttribute{attribute_name: attr_args[0].to_string()})
         }
     }
     else {
-        Err(GerberParserError::FileAttributeParseError(raw_line))
+        Err(GerberParserError::FileAttributeParseError{})
     }
 }
 
@@ -692,6 +666,9 @@ fn parse_file_attribute(line: Chars) -> Result<FileAttribute, GerberParserError>
 /// 
 /// ⚠️ This parsing statement needs a lot of tests and validation at the current stage!
 fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
+    
+    use GerberParserError::UnsupportedApertureAttribute;
+    
     let raw_line = line.as_str().to_string();
     let attr_args = get_attr_args(line)?;
     println!("TA ARGS: {:?}", attr_args);
@@ -712,12 +689,12 @@ fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
                     "SmdPad" => match attr_args[2] {
                         "CopperDefined" => ApertureFunction::SmdPad(SmdPadType::CopperDefined),
                         "SoldermaskDefined" => ApertureFunction::SmdPad(SmdPadType::SoldermaskDefined),
-                        _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+                        _ => return Err(UnsupportedApertureAttribute{aperture_attribute: raw_line})
                     },
                     "BgaPad" => match attr_args[2] {
                         "CopperDefined" => ApertureFunction::BgaPad(SmdPadType::CopperDefined),
                         "SoldermaskDefined" => ApertureFunction::BgaPad(SmdPadType::SoldermaskDefined),
-                        _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+                        _ => return Err(UnsupportedApertureAttribute{aperture_attribute: raw_line})
                     },
                     "HeatsinkPad" => ApertureFunction::HeatsinkPad,
                     "TestPad" => ApertureFunction::TestPad,
@@ -725,7 +702,7 @@ fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
                     "FiducialPad" => match attr_args[2]{
                         "Global" => ApertureFunction::FiducialPad(FiducialScope::Global),
                         "Local" => ApertureFunction::FiducialPad(FiducialScope::Local),
-                        _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+                        _ => return Err(UnsupportedApertureAttribute{aperture_attribute: raw_line})
                     },
                     "ThermalReliefPad" => ApertureFunction::ThermalReliefPad,
                     "WasherPad" => ApertureFunction::WasherPad,
@@ -740,7 +717,7 @@ fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
                     "NonMaterial" => ApertureFunction::NonMaterial,
                     "Material" => ApertureFunction::Material,
                     "Other" => ApertureFunction::Other(attr_args[2].to_string()),
-                    _ => return Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+                    _ => return Err(UnsupportedApertureAttribute{aperture_attribute: raw_line})
                 })).into())
             },
             "DrillTolerance" => {
@@ -749,10 +726,12 @@ fn parse_aperture_attribute(line: Chars) -> Result<Command, GerberParserError> {
                      minus: attr_args[2].parse::<f64>().unwrap()
                      }).into())
             }
-            _ => Err(GerberParserError::UnsupportedApertureAttribute(raw_line))
+            _ => Err(UnsupportedApertureAttribute{aperture_attribute: raw_line})
         }
     }
-    else { Err(GerberParserError::InvalidApertureAttribute(raw_line)) }
+    else { 
+        Err(GerberParserError::InvalidApertureAttribute{aperture_attribute: raw_line}) 
+    }
 }
 
 
@@ -762,7 +741,7 @@ fn parse_delete_attribute(line: Chars) -> Result<Command, GerberParserError>{
     if attr_args.len() == 1 {
         Ok(ExtendedCode::DeleteAttribute(attr_args[0].to_string()).into())
     } else {
-        Err(GerberParserError::InvalidDeleteAttribute(raw_line))
+        Err(GerberParserError::InvalidDeleteAttribute{delete_attribute: raw_line})
     }
 }
 
@@ -780,12 +759,13 @@ fn parse_delete_attribute(line: Chars) -> Result<Command, GerberParserError>{
 /// assert_eq!(arguments, vec!["DrillTolerance","0.02","0.01"])
 /// ```
 pub fn get_attr_args(mut attribute_chars: Chars) -> Result<Vec<&str>, GerberParserError> {
+    
     attribute_chars.next_back()
-        .ok_or(GerberParserError::InvalidFileAttribute(attribute_chars.as_str().to_string()))?;
+        .ok_or(GerberParserError::InvalidFileAttribute{file_attribute: attribute_chars.as_str().to_string()})?;
     attribute_chars.next_back()
-        .ok_or(GerberParserError::InvalidFileAttribute(attribute_chars.as_str().to_string()))?;
+        .ok_or(GerberParserError::InvalidFileAttribute{file_attribute: attribute_chars.as_str().to_string()})?;
     attribute_chars.next()
-        .ok_or(GerberParserError::InvalidFileAttribute(attribute_chars.as_str().to_string()))?;
+        .ok_or(GerberParserError::InvalidFileAttribute{file_attribute: attribute_chars.as_str().to_string()})?;
     Ok(attribute_chars.as_str().split(",").map(|el| el.trim()).collect())
 } 
 

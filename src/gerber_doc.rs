@@ -2,7 +2,7 @@ use gerber_types::{Unit, CoordinateFormat, Aperture, Command, ExtendedCode, Aper
 use::std::collections::HashMap;
 use std::fmt;
 use std::iter::repeat;
-use crate::error::GerberParserError;
+use crate::error::GerberParserErrorWithContext;
 
 #[derive(Debug)]
 // Representation of Gerber document 
@@ -14,7 +14,7 @@ pub struct GerberDoc {
     /// map of apertures which can be used in draw commands later on in the document. 
     pub apertures: HashMap::<i32, Aperture>,
     // Anything else, draw commands, comments, attributes
-    pub commands: Vec<Result<Command, GerberParserError>>,
+    pub commands: Vec<Result<Command, GerberParserErrorWithContext>>,
     /// Image Name, 8.1.3. Deprecated, but still used by fusion 360.
     pub image_name: Option<String>
 }
@@ -34,53 +34,35 @@ impl GerberDoc {
     /// Turns a GerberDoc into a &vec of gerber-types Commands
     /// 
     /// Get a representation of a gerber document *purely* in terms of elements provided
-    /// in the gerber-types rust crate. Note that aperture definitions will be sorted by code number
-    /// with lower codes being at the top of the command. This is independent of their order during
-    /// parsing.
+    /// in the gerber-types rust crate.
     /// 
     /// This will ignore any errors encountered during parsing, to access those use `get_errors`
     pub fn to_commands(self) -> Vec<Command> {
-        let mut gerber_cmds: Vec<Command> = Vec::new();
-        match self.format_specification{
-            None => {}
-            Some(format_spec) => {
-                gerber_cmds.push(ExtendedCode::CoordinateFormat(format_spec).into());
+        self.commands.into_iter().filter_map(|element|{
+            match element {
+                Ok(com) => Some(com),
+                Err(_) => None
             }
-        }
-        match self.units{
-            None => {}
-            Some(units) => {
-                gerber_cmds.push(ExtendedCode::Unit(units).into());
-            }
-        }
-        
-        // we add the apertures to the list, but we sort by code. This means the order of the output
-        // is reproducible every time. 
-        let mut apertures = self.apertures.into_iter().collect::<Vec<_>>();
-        apertures.sort_by_key(|tup| tup.0);
-        for (code, aperture) in apertures {
-            gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                code,
-                aperture,
-            }).into());
-        }
-        gerber_cmds.extend(self.commands.into_iter().filter_map(|command|{
-            match command{
-                Ok(real_com) => {
-                    Some(real_com)
-                }
-                Err(_) => {
-                    None
-                }
-            }
-        }));
-        
-        // TODO implement for units        
-        return gerber_cmds
+        }).collect()
     }
     
-    pub fn get_errors(&self) -> Vec<&GerberParserError> {
-        let mut error_vec: Vec<&GerberParserError> = Vec::new();
+    /// Similar to `to_commands()`, but does not consume the document, and returns refs
+    ///
+    /// Get a representation of a gerber document *purely* in terms of elements provided
+    /// in the gerber-types rust crate.
+    ///
+    /// This will ignore any errors encountered during parsing, to access those use `get_errors`
+    pub fn as_commands(&self) -> Vec<&Command> {
+        self.commands.iter().filter_map(|element|{
+            match element {
+                Ok(com) => Some(com),
+                Err(_) => None
+            }
+        }).collect()
+    }
+    
+    pub fn get_errors(&self) -> Vec<&GerberParserErrorWithContext> {
+        let mut error_vec: Vec<&GerberParserErrorWithContext> = Vec::new();
         for command in &self.commands {
             if let Err(error) = command {
                 error_vec.push(error);

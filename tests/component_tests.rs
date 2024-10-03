@@ -2,7 +2,7 @@ use gerber_types::{GCode, DCode, FunctionCode, Command, Unit, CoordinateFormat, 
      Rectangular, Polygon, Operation, ExtendedCode, ApertureAttribute, ApertureFunction, FileAttribute,
     Part, FileFunction, FilePolarity, StepAndRepeat};
 use::std::collections::HashMap;
-use gerber_parser::error::GerberParserError;
+use gerber_parser::error::{GerberParserErrorWithContext, };
 use gerber_parser::parser::{parse_gerber, coordinates_from_gerber, coordinates_offset_from_gerber};
 
 mod utils;
@@ -72,11 +72,11 @@ fn G04_comments() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
                 Ok(Command::FunctionCode(FunctionCode::GCode(GCode::Comment(_)))) => true, _ => false}).collect()};
 
-    let test_vec: Vec<Result<Command, GerberParserError>> = vec![
+    let test_vec: Vec<Result<Command, GerberParserErrorWithContext>> = vec![
         Ok(Command::FunctionCode(FunctionCode::GCode(GCode::Comment("Comment before typical configuration lines".to_string())))),
         Ok(Command::FunctionCode(FunctionCode::GCode(GCode::Comment("And now a comment after them".to_string()))))
     ];
@@ -101,7 +101,7 @@ fn aperture_selection() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
             Ok(Command::FunctionCode(FunctionCode::DCode(DCode::SelectAperture(_)))) => true, _ => false}).collect()};
 
@@ -128,7 +128,7 @@ fn D01_interpolation_linear() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
             Ok(Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(_, _))))) => true, _ => false}).collect()};
 
@@ -159,7 +159,7 @@ fn D01_interpolation_circular() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
                 Ok(Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Interpolate(_, _))))) => true, _ => false}).collect()};
 
@@ -191,7 +191,7 @@ fn DO2_move_to_command() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
                 Ok(Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Move(_))))) => true, _ => false}).collect()};
 
@@ -219,7 +219,7 @@ fn DO3_flash_command() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
                 Ok(Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(_))))) => true, _ => false}).collect()};
 
@@ -249,7 +249,7 @@ fn omitted_coordinate() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
                 Ok(Command::FunctionCode(FunctionCode::DCode(DCode::Operation(Operation::Flash(_))))) => true, _ => false}).collect()};
 
@@ -281,7 +281,7 @@ fn step_and_repeat() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
                 Ok(Command::ExtendedCode(ExtendedCode::StepAndRepeat(_))) => true, _ => false}).collect()};
 
@@ -350,7 +350,7 @@ fn TA_aperture_attributes() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
             Ok(Command::ExtendedCode(ExtendedCode::ApertureAttribute(_))) => true, _ => false}).collect()};
 
@@ -380,7 +380,7 @@ fn TF_file_attributes() {
     M02*        
     ");
 
-    let filter_commands = |cmds:Vec<Result<Command, GerberParserError>>| -> Vec<Result<Command, GerberParserError>> {
+    let filter_commands = |cmds:Vec<Result<Command, GerberParserErrorWithContext>>| -> Vec<Result<Command, GerberParserErrorWithContext>> {
         cmds.into_iter().filter(|cmd| match cmd {
             Ok(Command::ExtendedCode(ExtendedCode::FileAttribute(_))) => true, _ => false}).collect()};
 
