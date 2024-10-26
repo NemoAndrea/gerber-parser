@@ -26,18 +26,14 @@ let commands:Vec<Command> = gerber_doc.to_commands();
 Currently missing
 
 * All `AM` commands
-* `LM`, `LR`, `LS` commands (note: these are deprecated in the spec)
+* `LM`, `LR`, `LS`, `IP` commands (note: these are deprecated in the spec)
 * `AB` commands
 
 Partial:
 
 * The `TF` and `TA` commands only support a limited range of arguments; custom attributes will result in an error
 
-In addition, comments in the header section of the file (i.e. unit type declaration, format specification and aperture declarations) will be placed below the header when the parsed Gerber is converted back to string via serialisation. 
-
 ### General to-do
 
-* Make parsing a bit cleaner, with `Result`
-* Reduce the number of panics 
-* Make error messages clearer (avoid plain unwraps in places where errors can realistically occur)
 * Do proper coordinate check (compatibility with `format specification`)
+* Test with output from more programs (I use f360 and that seems to work)

@@ -2,9 +2,9 @@ use gerber_types::{Unit, CoordinateFormat, Aperture, Command, ExtendedCode, Aper
 use::std::collections::HashMap;
 use std::fmt;
 use std::iter::repeat;
+use crate::error::GerberParserErrorWithContext;
 
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 // Representation of Gerber document 
 pub struct GerberDoc {
     // unit type, defined once per document
@@ -13,8 +13,10 @@ pub struct GerberDoc {
     pub format_specification: Option<CoordinateFormat>,
     /// map of apertures which can be used in draw commands later on in the document. 
     pub apertures: HashMap::<i32, Aperture>,
-    // Anything else, draw commands, comments, attributes 
-    pub commands: Vec<Command>    
+    // Anything else, draw commands, comments, attributes
+    pub commands: Vec<Result<Command, GerberParserErrorWithContext>>,
+    /// Image Name, 8.1.3. Deprecated, but still used by fusion 360.
+    pub image_name: Option<String>
 }
 
 impl GerberDoc {
@@ -24,47 +26,75 @@ impl GerberDoc {
             units: None,
             format_specification: None,
             apertures: HashMap::new(),
-            commands: Vec::new()
+            commands: Vec::new(),
+            image_name: None,
         }
     }
 
     /// Turns a GerberDoc into a &vec of gerber-types Commands
     /// 
     /// Get a representation of a gerber document *purely* in terms of elements provided
-    /// in the gerber-types rust crate. Note that aperture definitions will be sorted by code number
-    /// with lower codes being at the top of the command. This is independent of their order during
-    /// parsing.
-    pub fn to_commands(mut self) -> Vec<Command> {
-        let mut gerber_cmds: Vec<Command> = Vec::new();
-        gerber_cmds.push(ExtendedCode::CoordinateFormat(self.format_specification.unwrap()).into());
-        gerber_cmds.push(ExtendedCode::Unit(self.units.unwrap()).into());
-
-        // we add the apertures to the list, but we sort by code. This means the order of the output
-        // is reproducible every time. 
-        let mut apertures = self.apertures.into_iter().collect::<Vec<_>>();
-        apertures.sort_by_key(|tup| tup.0);
-        for (code, aperture) in apertures {
-            gerber_cmds.push(ExtendedCode::ApertureDefinition(ApertureDefinition {
-                code: code,
-                aperture: aperture}).into())
-        }        
-
-        gerber_cmds.append(&mut self.commands);
-        // TODO implement for units        
-        return gerber_cmds
+    /// in the gerber-types rust crate.
+    /// 
+    /// This will ignore any errors encountered during parsing, to access those use `get_errors`
+    pub fn to_commands(self) -> Vec<Command> {
+        self.commands.into_iter().filter_map(|element|{
+            match element {
+                Ok(com) => Some(com),
+                Err(_) => None
+            }
+        }).collect()
+    }
+    
+    /// Similar to `to_commands()`, but does not consume the document, and returns refs
+    ///
+    /// Get a representation of a gerber document *purely* in terms of elements provided
+    /// in the gerber-types rust crate.
+    ///
+    /// This will ignore any errors encountered during parsing, to access those use `get_errors`
+    pub fn as_commands(&self) -> Vec<&Command> {
+        self.commands.iter().filter_map(|element|{
+            match element {
+                Ok(com) => Some(com),
+                Err(_) => None
+            }
+        }).collect()
+    }
+    
+    pub fn get_errors(&self) -> Vec<&GerberParserErrorWithContext> {
+        let mut error_vec: Vec<&GerberParserErrorWithContext> = Vec::new();
+        for command in &self.commands {
+            if let Err(error) = command {
+                error_vec.push(error);
+            }
+        }
+        error_vec
     }
 }
 
 impl fmt::Display for GerberDoc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let int_str: String = repeat("_").take(self.format_specification.unwrap().integer as usize).collect();
-        let dec_str: String = repeat("_").take(self.format_specification.unwrap().decimal as usize).collect();
-        writeln!(f, "GerberDoc").unwrap();
-        writeln!(f, "- units: {:?}", self.units).unwrap();
-        writeln!(f, "- format spec: {}.{} ({}|{})", int_str, dec_str, self.format_specification.unwrap().integer, self.format_specification.unwrap().decimal).unwrap();
-        writeln!(f, "- apertures: ").unwrap();
+        writeln!(f, "GerberDoc")?;
+        writeln!(f, "- units: {:?}", self.units)?;
+        match self.format_specification{
+            None => {
+                writeln!(f, "- no format spec!")?;
+            }
+            Some(format_spec) => {
+                let int_str: String = repeat("_").take(format_spec.integer as usize).collect();
+                let dec_str: String = repeat("_").take(format_spec.decimal as usize).collect();
+                writeln!(f, "- format spec: {}.{} ({}|{})",
+                         int_str,
+                         dec_str,
+                         format_spec.integer,
+                         format_spec.decimal
+                )?;
+            }
+        }
+        
+        writeln!(f, "- apertures: ")?;
         for (code, _) in &self.apertures {
-            writeln!(f, "\t {}", code).unwrap();
+            writeln!(f, "\t {}", code)?;
         }
         write!(f, "- commands: {}", &self.commands.len())
     }
